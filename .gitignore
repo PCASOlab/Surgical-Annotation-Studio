@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Bundled ffmpeg binaries (large; download fresh per packaging/README.md
+# instead of committing them)
+resources/ffmpeg/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Project data (if you run the app inside this same folder -- videos,
+# cut clips, labeled frames, and annotations don't belong in a code repo)
+videos/
+pose/
+labeled-data/
+semantic/
+clinical/
+config.yaml
+project_meta.json

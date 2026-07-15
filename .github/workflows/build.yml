@@ -1,0 +1,60 @@
+name: Build desktop app
+
+# Builds a standalone macOS and Windows package with PyInstaller.
+# Triggers on pushing a version tag (e.g. `git tag v1.0 && git push --tags`)
+# or manually from the Actions tab ("Run workflow").
+#
+# NOTE: this workflow does NOT bundle ffmpeg (see packaging/README.md for
+# why) -- the built apps will require ffmpeg to be installed separately on
+# whatever machine runs them, unless you add a step here to download
+# static binaries into resources/ffmpeg/<platform>/ before the build step.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform_name: mac
+          - os: windows-latest
+            platform_name: windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: python packaging/build.py
+
+      - name: Zip build output
+        shell: bash
+        run: |
+          cd dist
+          zip -r "../Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip" "Surgical Annotation Studio"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Surgical-Annotation-Studio-${{ matrix.platform_name }}
+          path: Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip
