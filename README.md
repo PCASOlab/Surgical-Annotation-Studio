@@ -2,8 +2,12 @@
 
 A desktop app for annotating surgical videos in one place: cut case
 videos into clips, label needle/tool keypoints, mark the semantic-state
-timeline, and score technical skill (OSATS/RSS/PJ) -- all without
+timeline, and score technical skill -- all without
 switching between separate tools.
+
+Procedures:
+- Pancreaticojejunostomy (Whipple) - OSATS/RSS/PJ + stitch-level
+- Paraesophageal Hernia (PEH) - OSATS/RSS/GEARS + stitch-level
 
 Built and most tested on Linux; also runs on macOS and Windows with
 ffmpeg installed.
