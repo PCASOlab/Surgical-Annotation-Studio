@@ -7,12 +7,13 @@ Two panels:
     (gland texture, duct size, EBL, FRS, POPF, Clavien-Dindo, etc). This
     data is never edited or re-written by the GUI -- it comes from chart
     review, not video annotation.
-  - Right: a read-only review of every score entry (case-level OSATS/RSS
-    and per-stitch PJ/pd_yank/pd_curve/j_yank/j_curve) already saved to
-    clinical/score_entries.csv. Entry happens in the Preprocessing tab,
-    right next to the video the rater is scoring -- this tab is for
-    reviewing/auditing what's been recorded, not a second entry point.
-    Filter by case, or search all cases.
+  - Right: a read-only review of every score entry -- case-level and
+    per-stitch subitems alike, one row per subitem regardless of which
+    procedure's rubric it came from (see core.config.RUBRICS) -- already
+    saved to clinical/score_entries.csv. Entry happens in the
+    Preprocessing tab, right next to the video the rater is scoring --
+    this tab is for reviewing/auditing what's been recorded, not a second
+    entry point. Filter by case, or search all cases.
 
 PII columns (MRN, Progressive_Number) are stripped on load and never
 surfaced anywhere in this tab.
@@ -76,18 +77,19 @@ class ClinicalTab(QWidget):
         row.addStretch(1)
         right_l.addLayout(row)
 
-        self.entries_table = QTableWidget(0, 9)
+        self.entries_table = QTableWidget(0, 8)
         self.entries_table.setHorizontalHeaderLabels(
-            ["case_id", "stitch", "rater", "scale", "subitem", "score",
-             "pd_yank/curve", "j_yank/curve", "notes"]
+            ["case_id", "case_type", "stitch", "rater", "scale", "subitem", "score", "notes"]
         )
         self.entries_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.entries_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         right_l.addWidget(self.entries_table)
         note = QLabel(
-            "Case-level rows (scale = OSATS/RSS) have a blank stitch column and show "
-            "which subitem (e.g. osats_gentle, rss_knot) under \"subitem\". "
-            "Stitch-level rows (scale = STITCH_SCORES) show PJ under \"score\"."
+            "One row per subitem, for any procedure's rubric. Case-level rows "
+            "(e.g. scale = OSATS/RSS/GEARS) have a blank stitch column; "
+            "\"subitem\" shows which one (e.g. osats_gentle, rss_knot, "
+            "gears_autonomy). Stitch-level rows (e.g. PJ, yank_factor, "
+            "stitch_location) show the stitch ID."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #888;")
@@ -173,16 +175,11 @@ class ClinicalTab(QWidget):
             return str(val)
 
         for i, (_, r) in enumerate(df.iterrows()):
-            pd_y = clean(r.get("pd_yank"))
-            pd_c = clean(r.get("pd_curve"))
-            j_y = clean(r.get("j_yank"))
-            j_c = clean(r.get("j_curve"))
             self.entries_table.setItem(i, 0, QTableWidgetItem(clean(r.get("case_id"))))
-            self.entries_table.setItem(i, 1, QTableWidgetItem(clean(r.get("video_id_annot"))))
-            self.entries_table.setItem(i, 2, QTableWidgetItem(clean(r.get("rater"))))
-            self.entries_table.setItem(i, 3, QTableWidgetItem(clean(r.get("scale"))))
-            self.entries_table.setItem(i, 4, QTableWidgetItem(clean(r.get("hogg_var"))))
-            self.entries_table.setItem(i, 5, QTableWidgetItem(clean(r.get("score"))))
-            self.entries_table.setItem(i, 6, QTableWidgetItem(f"{pd_y}/{pd_c}" if (pd_y or pd_c) else ""))
-            self.entries_table.setItem(i, 7, QTableWidgetItem(f"{j_y}/{j_c}" if (j_y or j_c) else ""))
-            self.entries_table.setItem(i, 8, QTableWidgetItem(clean(r.get("notes"))))
+            self.entries_table.setItem(i, 1, QTableWidgetItem(clean(r.get("case_type"))))
+            self.entries_table.setItem(i, 2, QTableWidgetItem(clean(r.get("video_id_annot"))))
+            self.entries_table.setItem(i, 3, QTableWidgetItem(clean(r.get("rater"))))
+            self.entries_table.setItem(i, 4, QTableWidgetItem(clean(r.get("scale"))))
+            self.entries_table.setItem(i, 5, QTableWidgetItem(clean(r.get("hogg_var"))))
+            self.entries_table.setItem(i, 6, QTableWidgetItem(clean(r.get("score"))))
+            self.entries_table.setItem(i, 7, QTableWidgetItem(clean(r.get("notes"))))

@@ -10,6 +10,14 @@ recorded cut offset) and writes them into
 semantic/<case_id>_PJ_d2m_semantic_<rater>.xlsx using the exact T/E column
 schema of the existing annotation files, so output here is a drop-in
 addition to the existing dataset.
+
+Autosave: switching case/stitch clips automatically saves whatever
+annotation was on screen first (as long as a Rater name is set -- that's
+what the xlsx filename is keyed on, so there's no valid place to save to
+without it). Previously, switching clips before manually clicking "Save
+to XLSX" silently discarded the in-progress annotation; now the only way
+to lose work is to switch clips with no Rater name set, which pops an
+explicit warning instead of silently discarding anything.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -35,6 +43,13 @@ class SemanticTab(QWidget):
         super().__init__(parent)
         self.pm = pm
         self._current_case: str | None = None
+        # The case/stitch actually loaded/displayed right now -- tracked
+        # separately from the combo boxes' live text, since by the time a
+        # currentTextChanged handler fires the combo already shows the
+        # *new* selection. Autosave needs to know what to save (the *old*
+        # stitch) before that state is overwritten.
+        self._loaded_case: str | None = None
+        self._loaded_stitch: str | None = None
         self._events: list[tuple[float, str]] = []  # (clip_ms, label)
         self._build_ui()
         self.refresh_cases()
@@ -103,6 +118,10 @@ class SemanticTab(QWidget):
         btn_save = QPushButton("\U0001f4be Save to XLSX")
         btn_save.clicked.connect(self._save)
         side.addWidget(btn_save)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #888;")
+        self.status_label.setWordWrap(True)
+        side.addWidget(self.status_label)
         side.addStretch(1)
         mid.addLayout(side, stretch=1)
         layout.addLayout(mid, stretch=1)
@@ -130,6 +149,9 @@ class SemanticTab(QWidget):
             self._on_case_changed(self.case_combo.currentText())
 
     def _on_case_changed(self, case_id: str) -> None:
+        # Autosave whatever was loaded under the OLD case before switching
+        # -- self._loaded_case/_loaded_stitch still reflect it at this point.
+        self._autosave_if_needed()
         self._current_case = case_id or None
         self.stitch_combo.blockSignals(True)
         self.stitch_combo.clear()
@@ -139,16 +161,29 @@ class SemanticTab(QWidget):
                     continue
                 self.stitch_combo.addItem(p.stem)
         self.stitch_combo.blockSignals(False)
+        self._loaded_case = None
+        self._loaded_stitch = None
         if self.stitch_combo.count():
             self._on_stitch_changed(self.stitch_combo.currentText())
+        else:
+            self._events = []
+            self._refresh_event_table()
+            self.comments_edit.clear()
+            self.validation_view.clear()
 
     def _on_stitch_changed(self, stitch_id: str) -> None:
         if not stitch_id or not self._current_case:
             return
+        # Autosave whatever was loaded under the OLD stitch before
+        # switching -- do this BEFORE touching self._events/_loaded_stitch.
+        if self._loaded_stitch != stitch_id or self._loaded_case != self._current_case:
+            self._autosave_if_needed()
         path = self.pm.paths.pose / self._current_case / f"{stitch_id}.mp4"
         if not path.exists():
             return
         self.player.load(path)
+        self._loaded_case = self._current_case
+        self._loaded_stitch = stitch_id
         self._events = []
         self._refresh_event_table()
         self.comments_edit.clear()
@@ -159,11 +194,76 @@ class SemanticTab(QWidget):
             return None
         return self.pm.get_stitch_meta(self._current_case, self.stitch_combo.currentText())
 
-    def _xlsx_path(self) -> Path | None:
+    def _xlsx_path_for(self, case_id: str) -> Path | None:
         rater = self.rater_edit.text().strip()
-        if not self._current_case or not rater:
+        if not case_id or not rater:
             return None
-        return self.pm.paths.semantic / f"{self._current_case}_PJ_d2m_semantic_{rater}.xlsx"
+        return self.pm.paths.semantic / f"{case_id}_PJ_d2m_semantic_{rater}.xlsx"
+
+    def _xlsx_path(self) -> Path | None:
+        return self._xlsx_path_for(self._current_case) if self._current_case else None
+
+    # -- autosave -------------------------------------------------------------
+    def _has_unsaved_work(self) -> bool:
+        return bool(self._events) or bool(self.comments_edit.toPlainText().strip())
+
+    def _autosave_if_needed(self) -> bool:
+        """Autosave the currently-loaded stitch's annotation (self._events/
+        comments, for self._loaded_case/_loaded_stitch) before it gets
+        overwritten by switching to a different clip. Returns True if it's
+        safe to proceed (nothing needed saving, or it saved successfully);
+        False if there was unsaved work that could NOT be saved (no rater
+        name set) -- the caller still proceeds with switching either way,
+        since Qt's combo box has already changed by the time this fires,
+        but the warning at least makes the data loss visible instead of
+        silent."""
+        if self._loaded_case is None or self._loaded_stitch is None:
+            return True
+        if not self._has_unsaved_work():
+            return True
+        xlsx_path = self._xlsx_path_for(self._loaded_case)
+        if xlsx_path is None:
+            QMessageBox.warning(
+                self, "Unsaved annotation \u2014 no rater set",
+                f"Stitch '{self._loaded_stitch}' (case '{self._loaded_case}') has "
+                f"unsaved semantic events, but no Rater name is set, so it can't be "
+                f"auto-saved. This annotation will be LOST. Enter a Rater name before "
+                f"switching clips, or go back and save this stitch manually."
+            )
+            return False
+        self._write_annotation(self._loaded_case, self._loaded_stitch,
+                                self._events, self.comments_edit.toPlainText())
+        self.status_label.setText(
+            f"Auto-saved '{self._loaded_stitch}' (case '{self._loaded_case}') \u2713"
+        )
+        return True
+
+    def _write_annotation(self, case_id: str, stitch_id: str,
+                           events: list[tuple[float, str]], comments: str) -> Path:
+        """Core save routine, parameterized on an explicit case/stitch/
+        events/comments rather than reading live UI state -- so autosave
+        can save the stitch being navigated AWAY FROM (whose data is about
+        to be replaced in the UI) just as easily as the manual Save button
+        saves the currently-displayed one."""
+        meta = self.pm.get_stitch_meta(case_id, stitch_id)
+        xlsx_path = self._xlsx_path_for(case_id)
+        offset = meta.start_sec_in_source if meta else 0.0
+        stop_sec = meta.end_sec_in_source if meta else (
+            offset + self.player.nframes / max(self.player.fps, 1))
+        events_abs = [
+            (semantic_io.seconds_to_time(ms / 1000.0 + offset), label)
+            for ms, label in events
+        ]
+        row = semantic_io.StitchRow(
+            file=case_id,
+            pcaso_var=stitch_id,
+            start=semantic_io.seconds_to_time(offset),
+            stop=semantic_io.seconds_to_time(stop_sec),
+            comments=comments or None,
+            events=events_abs,
+        )
+        semantic_io.upsert_row(xlsx_path, row)
+        return xlsx_path
 
     # -- event editing -------------------------------------------------------
     def _add_event(self, label: str) -> None:
@@ -262,25 +362,12 @@ class SemanticTab(QWidget):
             )
             if resp != QMessageBox.StandardButton.Yes:
                 return
-        meta = self._current_meta()
         xlsx_path = self._xlsx_path()
-        if xlsx_path is None:
+        if xlsx_path is None or not self._current_case:
             QMessageBox.warning(self, "Missing info", "Enter a rater name first.")
             return
-        offset = meta.start_sec_in_source if meta else 0.0
-        stop_sec = meta.end_sec_in_source if meta else (offset + self.player.nframes / max(self.player.fps, 1))
-
-        events_abs = [
-            (semantic_io.seconds_to_time(ms / 1000.0 + offset), label)
-            for ms, label in self._events
-        ]
-        row = semantic_io.StitchRow(
-            file=self._current_case,
-            pcaso_var=self.stitch_combo.currentText(),
-            start=semantic_io.seconds_to_time(offset),
-            stop=semantic_io.seconds_to_time(stop_sec),
-            comments=self.comments_edit.toPlainText() or None,
-            events=events_abs,
-        )
-        semantic_io.upsert_row(xlsx_path, row)
+        stitch_id = self.stitch_combo.currentText()
+        self._write_annotation(self._current_case, stitch_id, self._events,
+                                self.comments_edit.toPlainText())
+        self.status_label.setText(f"Saved '{stitch_id}' \u2713")
         QMessageBox.information(self, "Saved", f"Saved to {xlsx_path}")

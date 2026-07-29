@@ -63,26 +63,39 @@ See every case in the project and how much work is done on each
 
 ### 1. Preprocessing
 1. **Import video file...** to bring a case video into the project.
-2. **Standardize** it to a consistent frame rate and resolution.
-3. Scrub through the video and cut it into clips: set a **Clip type**
+2. Enter a **Case ID** (auto-filled from the video's filename -- editing
+   it manually is never overwritten by picking a different video later)
+   and pick a **Case type**. This selects which scoring rubric applies to
+   the whole case (see below); it's remembered per case, so reopening a
+   case later automatically shows the same rubric again.
+3. **Standardize** it to a consistent frame rate and resolution.
+4. Scrub through the video and cut it into clips: set a **Clip type**
    (`stitch` or `knot_tying` -- the Stitch ID field prefills with
    `stitch_`/`knot_` accordingly, just type the rest of the name), mark
    **Set start = playhead** and **Set end = playhead**, then
    **Add to clip list**. Repeat for every clip in the case, then
    **Cut all clips**.
-4. While the video's on screen, score it. All scoring dropdowns start
-   blank so it's obvious what hasn't been entered yet, and reset back to
-   blank after saving/adding so you don't accidentally reuse a leftover
-   value for the next case or stitch:
-   - **Case-level**: OSATS and RSS subitem dropdowns, entered once per
-     case with **Save case-level scores**. Only the subitems you actually
-     set a value for get saved -- leaving one blank just skips it rather
-     than saving a meaningless value.
-   - **Per-stitch**: PJ, and the yank/curve factors for the
-     pancreatic-duct and jejunum passes -- set these before clicking
-     **Add to clip list** so they're saved with that clip (stitch clips
-     only).
-5. Use the **Zoom** controls or **Ctrl+scroll** to zoom into the video;
+5. While the video's on screen, score it. Which fields show up depends on
+   the selected **Case type**:
+   - **PJ / Whipple**: OSATS + RSS subitems case-level; PJ and the
+     pancreatic-duct/jejunum yank & curve factors per stitch.
+   - **PEH (Paraesophageal Hernia)**: the same OSATS subitems (shared
+     across every case type) plus safety/closure/crural-exposure/GEARS
+     case-level fields; stitch location, a single yank/curve factor
+     (one value per stitch, not separate PD/J ones), needle handling,
+     knot security, and crural suturing skill per stitch.
+
+   All scoring dropdowns start blank so it's obvious what hasn't been
+   entered yet, and reset back to blank after saving/adding so you don't
+   accidentally reuse a leftover value for the next case or stitch. Only
+   the subitems you actually set a value for get saved -- leaving one
+   blank just skips it. Case-level scores save with **Save case-level
+   scores**; per-stitch scores are set before clicking **Add to clip
+   list** so they're captured with that clip (stitch clips only).
+
+   Adding a new procedure's rubric later is a config change, not a code
+   change -- see `core/config.py`'s `RUBRICS` registry.
+6. Use the **Zoom** controls or **Ctrl+scroll** to zoom into the video;
    drag the scrollbars to pan.
 
 ### 2. Keypoints (DLC)
@@ -101,6 +114,12 @@ and press **1-9** at the exact moment each state begins. Use
 **Validate quality checks** before saving to catch ordering mistakes.
 **Save** writes the annotation; **Load existing annotation** brings a
 previous save back in for review or edits.
+
+Switching to a different case or clip automatically saves whatever
+annotation was on screen first (as long as a **Rater** name is set --
+that's what the saved file is named after). The only way to lose
+in-progress work is switching clips with no Rater name entered, which
+pops an explicit warning rather than discarding anything silently.
 
 ### 4. Clinical
 The **Case** selector lists every case in the project (scored or cut into

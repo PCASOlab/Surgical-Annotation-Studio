@@ -13,12 +13,14 @@ Three jobs, top to bottom:
      source video's native resolution/fps (needed by any downstream code
      doing coordinate-space rescaling back to native pixels).
   3. Score each stitch (and the case overall) right here while its video
-     is on screen -- higher-is-better case-level OSATS/RSS and per-stitch
-     PJ, plus lower-is-better per-stitch pd_yank/pd_curve/j_yank/j_curve --
-     so a rater never has to context-switch to a separate tab mid-review.
+     is on screen. Which scoring fields appear depends on the selected
+     **Case type** (e.g. PJ/Whipple vs PEH) -- see core.config.RUBRICS.
+     A case's chosen type is remembered (ProjectManager.set_case_type) so
+     re-opening it later shows the same rubric automatically.
 """
 from __future__ import annotations
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -27,13 +29,14 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
     QPushButton, QSpinBox, QFileDialog, QListWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QPlainTextEdit, QComboBox,
-    QFormLayout, QGridLayout, QScrollArea,
+    QFormLayout, QLayout, QScrollArea,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 
+from core import config
 from core.config import (
     DEFAULT_TARGET_FPS, DEFAULT_TARGET_WIDTH, DEFAULT_TARGET_HEIGHT,
-    SCALE_DEFS, CASE_LEVEL_SCALES, STITCH_LEVEL_SCALES, CLIP_TYPES,
+    CASE_TYPES, CASE_TYPE_LABELS, DEFAULT_CASE_TYPE, CLIP_TYPES,
     DEFAULT_CLIP_TYPE, ScaleDef,
 )
 from core.project import ProjectManager, StitchMeta
@@ -63,6 +66,22 @@ def _combo_value(combo: QComboBox) -> Optional[int]:
     return None if data is None else int(data)
 
 
+def _clear_layout(layout: QLayout) -> None:
+    """Remove and delete every item/widget from `layout` without deleting
+    the layout object itself, so it can be reused across score-panel
+    rebuilds (e.g. when the Case type selection changes)."""
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        else:
+            sub_layout = item.layout()
+            if sub_layout is not None:
+                _clear_layout(sub_layout)
+
+
 class PreprocessingTab(QWidget):
     def __init__(self, pm: ProjectManager, parent=None):
         super().__init__(parent)
@@ -70,8 +89,12 @@ class PreprocessingTab(QWidget):
         self._pending_clips: list[dict] = []
         self._worker: FnWorker | None = None
         self._source_info_cache: dict[str, ffmpeg_utils.VideoInfo] = {}
+        self._last_autofilled_case_id: Optional[str] = None
+        self.case_combos: dict[str, QComboBox] = {}
+        self.stitch_combos: dict[str, QComboBox] = {}
         self._build_ui()
         self._refresh_source_list()
+        self._rebuild_score_panels()
 
     # -- UI ---------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -103,7 +126,14 @@ class PreprocessingTab(QWidget):
         form = QHBoxLayout()
         form.addWidget(QLabel("Case ID:"))
         self.case_id_edit = QLineEdit()
+        self.case_id_edit.editingFinished.connect(self._on_case_id_edited)
         form.addWidget(self.case_id_edit)
+        form.addWidget(QLabel("Case type:"))
+        self.case_type_combo = NoScrollComboBox()
+        for ct in CASE_TYPES:
+            self.case_type_combo.addItem(CASE_TYPE_LABELS.get(ct, ct), userData=ct)
+        self.case_type_combo.currentIndexChanged.connect(self._on_case_type_changed)
+        form.addWidget(self.case_type_combo)
         form.addWidget(QLabel("Target FPS:"))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 120)
@@ -168,9 +198,9 @@ class PreprocessingTab(QWidget):
         btn_add_clip.clicked.connect(self._add_clip_row)
         left.addWidget(btn_add_clip)
 
-        self.clip_table = QTableWidget(0, 8)
+        self.clip_table = QTableWidget(0, 6)
         self.clip_table.setHorizontalHeaderLabels(
-            ["Stitch ID", "Type", "Start", "End", "Duration", "PJ", "Yank (pd/j)", "Curve (pd/j)"]
+            ["Stitch ID", "Type", "Start", "End", "Duration", "Scores"]
         )
         self.clip_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         left.addWidget(self.clip_table)
@@ -200,19 +230,9 @@ class PreprocessingTab(QWidget):
         self.rater_edit = QLineEdit()
         score_l.addWidget(self.rater_edit)
 
-        self.case_form = case_form = QFormLayout()
-        self.case_combos: dict[str, QComboBox] = {}
-        last_group = None
-        for scale_name in CASE_LEVEL_SCALES:
-            d = SCALE_DEFS[scale_name]
-            if d.group != last_group:
-                case_form.addRow(self._section_label(
-                    f"Case-level {d.group} subitems (1-{d.hi})"))
-                last_group = d.group
-            combo = _make_scale_combo(d)
-            self.case_combos[scale_name] = combo
-            case_form.addRow(f"{d.display_label or scale_name}:", combo)
-        score_l.addLayout(case_form)
+        score_l.addWidget(self._section_label("Case-level"))
+        self.case_form = QFormLayout()
+        score_l.addLayout(self.case_form)
         btn_save_case = QPushButton("Save case-level scores")
         btn_save_case.clicked.connect(self._save_case_scores)
         score_l.addWidget(btn_save_case)
@@ -223,23 +243,14 @@ class PreprocessingTab(QWidget):
 
         score_l.addWidget(self._section_label("Per-stitch (applies to the NEXT clip you add)"))
         self.stitch_score_note = QLabel(
-            "Yank Factor = rate of excessive tissue-adverse force. "
-            "Off-Curvature = tissue trauma caused due to the needle NOT "
-            "following the ideal path. PD = pancreatic duct and J = jejunum. "
             "Captured when \"Add to clip list\" is clicked and only saved "
             "for Clip type = stitch."
         )
         self.stitch_score_note.setWordWrap(True)
         self.stitch_score_note.setStyleSheet("color: #888;")
         score_l.addWidget(self.stitch_score_note)
-
-        stitch_form = QFormLayout()
-        self.stitch_combos: dict[str, QComboBox] = {}
-        for scale_name in STITCH_LEVEL_SCALES:
-            combo = _make_scale_combo(SCALE_DEFS[scale_name])
-            self.stitch_combos[scale_name] = combo
-            stitch_form.addRow(f"{scale_name}:", combo)
-        score_l.addLayout(stitch_form)
+        self.stitch_form = QFormLayout()
+        score_l.addLayout(self.stitch_form)
         score_l.addStretch(1)
         b2.addWidget(score_box, stretch=2)
 
@@ -259,6 +270,76 @@ class PreprocessingTab(QWidget):
         lbl = QLabel(text)
         lbl.setStyleSheet("font-weight: bold; margin-top: 6px;")
         return lbl
+
+    # -- case type (rubric) selection -------------------------------------
+    def _current_case_type(self) -> str:
+        data = self.case_type_combo.currentData()
+        return data if data else DEFAULT_CASE_TYPE
+
+    def _on_case_type_changed(self, _index: int) -> None:
+        self._rebuild_score_panels()
+        self._sync_case_type_to_project()
+
+    def _rebuild_score_panels(self) -> None:
+        """(Re)build the case-level and stitch-level scoring dropdowns for
+        whichever Case type is currently selected. Called at startup and
+        every time the Case type selection changes."""
+        case_type = self._current_case_type()
+        rubric = config.RUBRICS[case_type]
+        case_keys = config.case_level_scales(case_type)
+        stitch_keys = config.stitch_level_scales(case_type)
+        group_counts = Counter(rubric[k].group for k in case_keys)
+
+        _clear_layout(self.case_form)
+        self.case_combos = {}
+        last_group = None
+        for scale_name in case_keys:
+            d = rubric[scale_name]
+            if d.group != last_group:
+                if group_counts[d.group] > 1:
+                    self.case_form.addRow(self._section_label(f"{d.group} (1-{d.hi})"))
+                last_group = d.group
+            combo = _make_scale_combo(d)
+            self.case_combos[scale_name] = combo
+            self.case_form.addRow(f"{d.display_label or scale_name}:", combo)
+
+        _clear_layout(self.stitch_form)
+        self.stitch_combos = {}
+        for scale_name in stitch_keys:
+            d = rubric[scale_name]
+            combo = _make_scale_combo(d)
+            self.stitch_combos[scale_name] = combo
+            self.stitch_form.addRow(f"{d.display_label or scale_name}:", combo)
+
+        # re-apply the stitch-combo enabled/disabled state for the current clip type
+        self._on_clip_type_changed(self.clip_type_combo.currentText())
+
+    def _sync_case_type_to_project(self) -> None:
+        case_id = self.case_id_edit.text().strip()
+        if case_id:
+            self.pm.set_case_type(case_id, self._current_case_type())
+
+    def _apply_known_case_type_for(self, case_id: str) -> None:
+        """If `case_id` already has a case type on record (from a previous
+        session, or from having just picked a video that matches a known
+        case), select it automatically instead of leaving whatever was
+        previously selected -- most useful when switching between cases
+        that use different rubrics."""
+        if not case_id:
+            return
+        known = self.pm.get_case_type(case_id)
+        if not known:
+            return
+        idx = self.case_type_combo.findData(known)
+        if idx >= 0 and idx != self.case_type_combo.currentIndex():
+            self.case_type_combo.blockSignals(True)
+            self.case_type_combo.setCurrentIndex(idx)
+            self.case_type_combo.blockSignals(False)
+            self._rebuild_score_panels()
+
+    def _on_case_id_edited(self) -> None:
+        case_id = self.case_id_edit.text().strip()
+        self._apply_known_case_type_for(case_id)
 
     def _on_clip_type_changed(self, clip_type: str) -> None:
         enabled = clip_type == "stitch"
@@ -301,26 +382,43 @@ class PreprocessingTab(QWidget):
             shutil.copy2(src, dst)
         self._refresh_source_list()
         self._log(f"Imported {src.name}")
+        # select the newly-imported video so Case ID/preview update to it
+        # right away, rather than leaving whatever was previously selected
+        items = self.source_list.findItems(src.name, Qt.MatchFlag.MatchExactly)
+        if items:
+            self.source_list.setCurrentItem(items[0])
 
     def _on_source_selected(self, name: str) -> None:
         if not name:
             return
         path = self.pm.paths.videos / name
-        if not path.exists() or not ffmpeg_utils.ffmpeg_available():
+        if not path.exists():
             return
-        try:
-            info = ffmpeg_utils.probe_video(path)
-            self._source_info_cache[name] = info
-            self.probe_label.setText(
-                f"Native/original resolution: {info.width}x{info.height} @ {info.fps:.2f} fps, "
-                f"{info.duration_sec:.1f}s, {info.nframes} frames, codec={info.codec}. "
-                f"This original resolution is recorded for every clip cut from it, "
-                f"even after standardizing."
-            )
-        except Exception as e:  # noqa: BLE001
-            self.probe_label.setText(f"probe failed: {e}")
-        if not self.case_id_edit.text():
+        if ffmpeg_utils.ffmpeg_available():
+            try:
+                info = ffmpeg_utils.probe_video(path)
+                self._source_info_cache[name] = info
+                self.probe_label.setText(
+                    f"Native/original resolution: {info.width}x{info.height} @ {info.fps:.2f} fps, "
+                    f"{info.duration_sec:.1f}s, {info.nframes} frames, codec={info.codec}. "
+                    f"This original resolution is recorded for every clip cut from it, "
+                    f"even after standardizing."
+                )
+            except Exception as e:  # noqa: BLE001
+                self.probe_label.setText(f"probe failed: {e}")
+
+        # Prefill Case ID from the video's filename -- but only overwrite
+        # if the field is empty or still holds whatever we last
+        # auto-filled it with, never something the user typed themselves.
+        # (Previously this only fired once ever, the first time the field
+        # was empty -- so importing/selecting a second video silently kept
+        # showing the first video's case ID.)
+        current = self.case_id_edit.text()
+        if not current or current == self._last_autofilled_case_id:
             self.case_id_edit.setText(path.stem)
+            self._last_autofilled_case_id = path.stem
+        self._apply_known_case_type_for(self.case_id_edit.text().strip())
+
         # also load it into the player for cutting (uses the *original*
         # if not yet standardized -- see _standardize's on-finish reload)
         self.player.load(path)
@@ -376,6 +474,7 @@ class PreprocessingTab(QWidget):
             return
 
         clip_type = self.clip_type_combo.currentText()
+        case_type = self._current_case_type()
         scores: dict[str, int] = {}
         if clip_type == "stitch":
             for name, combo in self.stitch_combos.items():
@@ -391,18 +490,13 @@ class PreprocessingTab(QWidget):
         self.clip_table.setItem(row, 3, QTableWidgetItem(ms_to_timecode(self._pending_end_ms)))
         dur = (self._pending_end_ms - self._pending_start_ms) / 1000.0
         self.clip_table.setItem(row, 4, QTableWidgetItem(f"{dur:.2f}s"))
-        self.clip_table.setItem(row, 5, QTableWidgetItem(str(scores.get("PJ", ""))))
-        self.clip_table.setItem(
-            row, 6, QTableWidgetItem(f"{scores.get('PD_YANK', '')}/{scores.get('J_YANK', '')}"
-                                      if scores else "")
-        )
-        self.clip_table.setItem(
-            row, 7, QTableWidgetItem(f"{scores.get('PD_CURVE', '')}/{scores.get('J_CURVE', '')}"
-                                      if scores else "")
-        )
+        scores_summary = ", ".join(f"{k}={v}" for k, v in scores.items())
+        self.clip_table.setItem(row, 5, QTableWidgetItem(scores_summary))
+
         self._pending_clips.append({
             "stitch_id": stitch_id,
             "clip_type": clip_type,
+            "case_type": case_type,
             "start_ms": self._pending_start_ms,
             "end_ms": self._pending_end_ms,
             "scores": scores,
@@ -503,21 +597,33 @@ class PreprocessingTab(QWidget):
 
             scores = clip.get("scores") or {}
             if clip["clip_type"] == "stitch" and scores:
-                clinical_io.append_score_entry(self.pm.paths.clinical, {
-                    "case_id": case_id,
-                    "video_id_annot": clip["stitch_id"],
-                    "rater": rater,
-                    "scale": "STITCH_SCORES",
-                    "score": scores.get("PJ", ""),
-                    "pd_yank": scores.get("PD_YANK", ""),
-                    "pd_curve": scores.get("PD_CURVE", ""),
-                    "j_yank": scores.get("J_YANK", ""),
-                    "j_curve": scores.get("J_CURVE", ""),
-                })
+                self._append_score_values(
+                    case_id, clip["case_type"], rater, clip["stitch_id"], scores
+                )
+        self.pm.set_case_type(case_id, self._current_case_type())
         self._log(f"Done. {len(results)} clip(s) written to pose/{case_id}/ and registered "
                   f"(scores saved to clinical/score_entries.csv for stitch clips).")
         self.clip_table.setRowCount(0)
         self._pending_clips.clear()
+
+    # -- score writing (generic: one row per subitem, any case type) -------------
+    def _append_score_values(self, case_id: str, case_type: str, rater: str,
+                              video_id_annot: str, values: dict[str, int]) -> None:
+        rubric = config.RUBRICS.get(case_type, {})
+        for scale_name, value in values.items():
+            d = rubric.get(scale_name)
+            if d is None:
+                continue
+            clinical_io.append_score_entry(self.pm.paths.clinical, {
+                "case_id": case_id,
+                "case_type": case_type,
+                "video_id_annot": video_id_annot,
+                "rater": rater,
+                "scale": d.group,
+                "item": d.item,
+                "hogg_var": scale_name,
+                "score": value,
+            })
 
     # -- case-level scoring ---------------------------------------------------
     def _save_case_scores(self) -> None:
@@ -525,30 +631,27 @@ class PreprocessingTab(QWidget):
         if not case_id:
             QMessageBox.warning(self, "Missing case ID", "Enter a case ID first.")
             return
+        case_type = self._current_case_type()
+        rubric = config.RUBRICS[case_type]
         rater = self.rater_edit.text().strip()
         saved = []
+        values: dict[str, int] = {}
         for scale_name, combo in self.case_combos.items():
             value = _combo_value(combo)
             if value is None:
                 continue  # left blank -- nothing entered, nothing to save
-            d = SCALE_DEFS[scale_name]
-            clinical_io.append_score_entry(self.pm.paths.clinical, {
-                "case_id": case_id,
-                "rater": rater,
-                "scale": d.group,       # "OSATS" or "RSS"
-                "item": d.item,          # merged_surgical_data_v2.csv item number
-                "hogg_var": scale_name,  # e.g. "osats_gentle" -- the subitem variable name
-                "score": value,
-            })
+            values[scale_name] = value
             saved.append(f"{scale_name}={value}")
 
         if not saved:
             self.case_score_status.setText("Nothing selected -- pick at least one subitem's score first.")
             return
 
+        self._append_score_values(case_id, case_type, rater, "", values)
+        self.pm.set_case_type(case_id, case_type)
         self.case_score_status.setText(
-            f"Saved for {case_id}: {', '.join(saved)} \u2713 "
-            f"(appended to clinical/score_entries.csv)"
+            f"Saved for {case_id} ({CASE_TYPE_LABELS.get(case_type, case_type)}): "
+            f"{', '.join(saved)} \u2713 (appended to clinical/score_entries.csv)"
         )
         # Reset every dropdown back to blank so it's obvious nothing has
         # been entered yet for the next case/review pass.

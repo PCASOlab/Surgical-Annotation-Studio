@@ -92,25 +92,38 @@ CLINICAL_DISPLAY_FIELDS: list[str] = [
     "Clavien_dindo", "age", "gender", "bmi", "ASA_class", "diabetes",
 ]
 
+# ---------------------------------------------------------------------------
+# Case types -- different procedures use different scoring rubrics.
+# ---------------------------------------------------------------------------
+CASE_TYPE_PJ_WHIPPLE = "PJ_WHIPPLE"
+CASE_TYPE_PEH = "PEH"
+CASE_TYPES: list[str] = [CASE_TYPE_PJ_WHIPPLE, CASE_TYPE_PEH]
+CASE_TYPE_LABELS: dict[str, str] = {
+    CASE_TYPE_PJ_WHIPPLE: "PJ / Whipple",
+    CASE_TYPE_PEH: "PEH / Paraesophageal Hernia",
+}
+DEFAULT_CASE_TYPE = CASE_TYPE_PJ_WHIPPLE
+
+
 # Scoring scales an annotator can add entries for (long-format rows
 # appended to clinical/score_entries.csv, joinable back into
 # merged_surgical_data_v2.csv's schema via case_id / video_id_annot).
 #
-# `level` is "case" (one value per case -- the OSATS/RSS subitems) or
-# "stitch" (one value per needle pass -- PJ score / yank / curve
-# adherence). `better` records which direction is desirable so the UI can
-# label scales for the annotator; it doesn't affect storage. `group` is
-# the merged_surgical_data_v2.csv `scale` value the entry should be filed
-# under (e.g. all osats_* subitems share group="OSATS"); `item` is that
-# CSV's numeric `item` column for the subitem, so entries here join
-# cleanly against the existing item numbering (OSATS = items 24-29,
-# robotic_skills/RSS = items 30-32).
+# `level` is "case" (one value per case) or "stitch" (one value per needle
+# pass). `better` records which direction is desirable ("higher"/"lower"),
+# or "" for a non-ordinal/categorical field like stitch_location where
+# there's no better-or-worse direction. `group` is the merged_surgical_
+# data_v2.csv `scale` value the entry should be filed under (e.g. all
+# osats_* subitems share group="OSATS"); `item` is that CSV's numeric
+# `item` column for the subitem where one is established (0 if n/a --
+# e.g. every PEH-specific field, since that rubric is new and has no
+# existing item numbering yet).
 @dataclass(frozen=True)
 class ScaleDef:
     level: str            # "case" | "stitch"
     lo: int
     hi: int
-    better: str            # "higher" | "lower"
+    better: str            # "higher" | "lower" | ""
     group: str             # merged_surgical_data_v2.csv `scale` value
     item: int = 0           # merged_surgical_data_v2.csv `item` number (0 if n/a)
     display_label: str = ""  # human-readable description shown in the UI
@@ -122,44 +135,61 @@ class ScaleDef:
         return [(v, str(v)) for v in range(self.lo, self.hi + 1)]
 
 
-# Condensed anchor descriptors for OSATS values 1/3/5, taken from the lab's
-# modified-OSATS rubric (values 2/4 are intentionally left as plain numbers
-# -- the rubric only defines anchors at 1/3/5). Format matches the
-# "N \u2013 description" style used for the other scales below.
+# ---------------------------------------------------------------------------
+# OSATS -- shared, unchanged, across every case type (per lab convention).
+# ---------------------------------------------------------------------------
 def _osats_labels(lo_desc: str, mid_desc: str, hi_desc: str) -> dict[int, str]:
+    """Condensed anchor descriptors for OSATS values 1/3/5 (the rubric only
+    defines anchors there; 2/4 are left as plain numbers)."""
     return {1: f"1 \u2013 {lo_desc}", 3: f"3 \u2013 {mid_desc}", 5: f"5 \u2013 {hi_desc}"}
 
 
-_OSATS_GENTLE_LABELS = _osats_labels(
-    "Rough, tears tissue, poor control",
-    "Minor trauma, occasional breaks",
-    "Appropriate tension, negligible injury",
-)
-_OSATS_TIME_LABELS = _osats_labels(
-    "Uncertain, inefficient, no progress",
-    "Slow but organized",
-    "Confident, efficient, fluid",
-)
-_OSATS_INSTRUMENT_LABELS = _osats_labels(
-    "Overshoots target, slow to correct",
-    "Some overshoot, quick to correct",
-    "Accurate, minimal readjustment",
-)
-_OSATS_FLOW_LABELS = _osats_labels(
-    "Uncertain, constantly changing focus",
-    "Slow but planned, organized",
-    "Safe, confident, maintains focus",
-)
-_OSATS_TISSUE_LABELS = _osats_labels(
-    "One hand, poor coordination",
-    "Both hands, sub-optimal dexterity",
-    "Both hands, expertly complementary",
-)
-_OSATS_SUMMARY_LABELS = _osats_labels("Deficient", "Average", "Masterful")
+_OSATS_SCALE_DEFS: dict[str, ScaleDef] = {
+    "osats_gentle": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=24,
+        option_labels=_osats_labels(
+            "Rough, tears tissue, poor control",
+            "Minor trauma, occasional breaks",
+            "Appropriate tension, negligible injury",
+        )),
+    "osats_time": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=25,
+        option_labels=_osats_labels(
+            "Uncertain, inefficient, no progress",
+            "Slow but organized",
+            "Confident, efficient, fluid",
+        )),
+    "osats_instrument": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=26,
+        option_labels=_osats_labels(
+            "Overshoots target, slow to correct",
+            "Some overshoot, quick to correct",
+            "Accurate, minimal readjustment",
+        )),
+    "osats_flow": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=27,
+        option_labels=_osats_labels(
+            "Uncertain, constantly changing focus",
+            "Slow but planned, organized",
+            "Safe, confident, maintains focus",
+        )),
+    "osats_tissue": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=28,
+        option_labels=_osats_labels(
+            "One hand, poor coordination",
+            "Both hands, sub-optimal dexterity",
+            "Both hands, expertly complementary",
+        )),
+    "osats_summary": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="OSATS", item=29,
+        option_labels=_osats_labels("Deficient", "Average", "Masterful")),
+}
+OSATS_SUBITEMS: list[str] = list(_OSATS_SCALE_DEFS.keys())
 
-# RSS (robotic skills) subitems all share the same 3-point anchor scale.
+# ---------------------------------------------------------------------------
+# PJ / Whipple rubric (pancreaticojejunostomy)
+# ---------------------------------------------------------------------------
 _RSS_LABELS = {1: "1 \u2013 Deficient", 2: "2 \u2013 Average", 3: "3 \u2013 Master"}
-
 _PJ_LABELS = {1: "1 \u2013 Poor suture", 2: "2 \u2013 Average suture", 3: "3 \u2013 Excellent suture"}
 _YANK_LABELS = {
     1: "1 \u2013 Minimal tissue trauma",
@@ -172,22 +202,8 @@ _CURVE_LABELS = {
     3: "3 \u2013 Visible tissue trauma",
 }
 
-SCALE_DEFS: dict[str, ScaleDef] = {
-    # OSATS subitems -- case-level, 1-5, matched to merged_surgical_data_v2.csv
-    # items 24-29. `display_label` intentionally left blank so the UI falls
-    # back to showing the raw variable name (osats_gentle, osats_time, ...).
-    "osats_gentle": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=24,
-                              option_labels=_OSATS_GENTLE_LABELS),
-    "osats_time": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=25,
-                            option_labels=_OSATS_TIME_LABELS),
-    "osats_instrument": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=26,
-                                  option_labels=_OSATS_INSTRUMENT_LABELS),
-    "osats_flow": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=27,
-                            option_labels=_OSATS_FLOW_LABELS),
-    "osats_tissue": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=28,
-                              option_labels=_OSATS_TISSUE_LABELS),
-    "osats_summary": ScaleDef(level="case", lo=1, hi=5, better="higher", group="OSATS", item=29,
-                               option_labels=_OSATS_SUMMARY_LABELS),
+_PJ_WHIPPLE_SCALE_DEFS: dict[str, ScaleDef] = {
+    **_OSATS_SCALE_DEFS,
     # RSS (robotic skills) subitems -- case-level, 1-3, items 30-32
     "rss_needle": ScaleDef(level="case", lo=1, hi=3, better="higher", group="RSS", item=30,
                             option_labels=_RSS_LABELS),
@@ -206,10 +222,139 @@ SCALE_DEFS: dict[str, ScaleDef] = {
     "J_CURVE": ScaleDef(level="stitch", lo=1, hi=3, better="lower", group="J_CURVE",
                          option_labels=_CURVE_LABELS),
 }
-CASE_LEVEL_SCALES: list[str] = [k for k, v in SCALE_DEFS.items() if v.level == "case"]
-STITCH_LEVEL_SCALES: list[str] = [k for k, v in SCALE_DEFS.items() if v.level == "stitch"]
-OSATS_SUBITEMS: list[str] = [k for k, v in SCALE_DEFS.items() if v.group == "OSATS"]
-RSS_SUBITEMS: list[str] = [k for k, v in SCALE_DEFS.items() if v.group == "RSS"]
+
+# ---------------------------------------------------------------------------
+# PEH rubric (paraesophageal hernia repair -- crural closure)
+# ---------------------------------------------------------------------------
+_PEH_SCALE_DEFS: dict[str, ScaleDef] = {
+    **_OSATS_SCALE_DEFS,
+
+    # -- case-level: closure/safety assessment --------------------------------
+    "posterior_crural_exposure": ScaleDef(
+        level="case", lo=1, hi=2, better="higher", group="CRURAL_EXPOSURE",
+        option_labels={1: "1 \u2013 No: posterior junction not fully exposed",
+                       2: "2 \u2013 Yes: fully exposed before closure"}),
+    "closure_security": ScaleDef(
+        level="case", lo=1, hi=2, better="higher", group="CLOSURE_SECURITY",
+        option_labels={1: "1 \u2013 Inadequate: insecure or visible gap",
+                       2: "2 \u2013 Adequate: appears secure"}),
+    "closure_tightness": ScaleDef(
+        level="case", lo=1, hi=3, better="", group="CLOSURE_TIGHTNESS",
+        option_labels={1: "1 \u2013 Too Tight: overly constricted around esophagus",
+                       2: "2 \u2013 Too Loose: inadequately approximated",
+                       3: "3 \u2013 Ideal: appropriately calibrated"}),
+    "calibration_performed": ScaleDef(
+        level="case", lo=1, hi=2, better="higher", group="CALIBRATION",
+        option_labels={1: "1 \u2013 No: not calibrated",
+                       2: "2 \u2013 Yes: calibrated with bougie/endoscope"}),
+    "safety": ScaleDef(
+        level="case", lo=1, hi=3, better="higher", group="SAFETY",
+        option_labels={1: "1 \u2013 Unsafe: major bleeding/tearing/injury risk",
+                       2: "2 \u2013 Safe: minor bleeding/tearing, no injury",
+                       3: "3 \u2013 Optimal: no bleeding, tearing, or injury"}),
+
+    # -- case-level: GEARS ------------------------------------------------------
+    "gears_depth_perception": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Poor: frequent corrections needed",
+                       2: "2 \u2013 Below average", 3: "3 \u2013 Competent: occasional adjustments",
+                       4: "4 \u2013 Above average", 5: "5 \u2013 Excellent throughout"}),
+    "gears_bimanual_dexterity": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Poor coordination", 2: "2 \u2013 Below average",
+                       3: "3 \u2013 Average", 4: "4 \u2013 Above average",
+                       5: "5 \u2013 Excellent coordination"}),
+    "gears_efficiency": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Excessive movements, poor workflow",
+                       2: "2 \u2013 Below average", 3: "3 \u2013 Average",
+                       4: "4 \u2013 Above average", 5: "5 \u2013 Excellent economy of motion"}),
+    "gears_force_sensitivity": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Frequent excessive force, tissue trauma",
+                       2: "2 \u2013 Below average",
+                       3: "3 \u2013 Appropriate, occasional over/under",
+                       4: "4 \u2013 Above average",
+                       5: "5 \u2013 Excellent, consistently appropriate"}),
+    "gears_robotic_control": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Poor instrument/camera control",
+                       2: "2 \u2013 Below average", 3: "3 \u2013 Average",
+                       4: "4 \u2013 Above average", 5: "5 \u2013 Excellent platform control"}),
+    "gears_autonomy": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Requires constant guidance",
+                       2: "2 \u2013 Requires frequent guidance",
+                       3: "3 \u2013 Mostly independent",
+                       4: "4 \u2013 Requires minimal guidance",
+                       5: "5 \u2013 Fully independent"}),
+    "overall_gears": ScaleDef(
+        level="case", lo=1, hi=5, better="higher", group="GEARS",
+        option_labels={1: "1 \u2013 Poor overall", 2: "2 \u2013 Below average",
+                       3: "3 \u2013 Competent", 4: "4 \u2013 Above average",
+                       5: "5 \u2013 Expert"}),
+
+    # -- case-level: overall RSS (single item for PEH, unlike Whipple's 3 subitems)
+    "overall_rss": ScaleDef(
+        level="case", lo=1, hi=3, better="higher", group="RSS",
+        option_labels={1: "1 \u2013 Poor overall suturing",
+                       2: "2 \u2013 Average overall suturing",
+                       3: "3 \u2013 Excellent overall suturing"}),
+
+    # -- stitch-level --------------------------------------------------------
+    # Categorical, not ordinal -- `better` is left blank since there's no
+    # better-or-worse direction, just which of the 3 anatomic locations.
+    "stitch_location": ScaleDef(
+        level="stitch", lo=1, hi=3, better="", group="STITCH_LOCATION",
+        option_labels={1: "1 \u2013 Posterior",
+                       2: "2 \u2013 Anterior right",
+                       3: "3 \u2013 Anterior left"}),
+    # Same values/labels as PJ/Whipple's yank/curve scales -- just one
+    # combined field per stitch instead of separate PD_/J_ versions, since
+    # a crural closure stitch has no pancreatic-duct-vs-jejunum distinction.
+    "yank_factor": ScaleDef(level="stitch", lo=1, hi=3, better="lower", group="YANK_FACTOR",
+                             option_labels=_YANK_LABELS),
+    "off_curvature": ScaleDef(level="stitch", lo=1, hi=3, better="lower", group="OFF_CURVATURE",
+                               option_labels=_CURVE_LABELS),
+    "needle_handling": ScaleDef(
+        level="stitch", lo=1, hi=2, better="higher", group="NEEDLE_HANDLING",
+        option_labels={1: "1 \u2013 No: inefficient handling / unnecessary tissue contact",
+                       2: "2 \u2013 Yes: efficient, no unnecessary contact"}),
+    "knot_security": ScaleDef(
+        level="stitch", lo=1, hi=2, better="higher", group="KNOT_SECURITY",
+        option_labels={1: "1 \u2013 No: insecure or inappropriate tension",
+                       2: "2 \u2013 Yes: secure, appropriate tension"}),
+    "crural_suturing_skill": ScaleDef(
+        level="stitch", lo=1, hi=3, better="higher", group="CRURAL_SUTURING_SKILL",
+        option_labels={1: "1 \u2013 Poor: hesitant, tissue trauma, or multiple passes",
+                       2: "2 \u2013 Average: minor inefficiencies, single-pass success",
+                       3: "3 \u2013 Excellent: efficient, precise, consistent single-pass"}),
+}
+
+# ---------------------------------------------------------------------------
+# Rubric registry -- add a new case type here and it shows up everywhere
+# (Preprocessing tab's Case type selector + scoring panel) automatically.
+# ---------------------------------------------------------------------------
+RUBRICS: dict[str, dict[str, ScaleDef]] = {
+    CASE_TYPE_PJ_WHIPPLE: _PJ_WHIPPLE_SCALE_DEFS,
+    CASE_TYPE_PEH: _PEH_SCALE_DEFS,
+}
+
+
+def case_level_scales(case_type: str) -> list[str]:
+    return [k for k, v in RUBRICS[case_type].items() if v.level == "case"]
+
+
+def stitch_level_scales(case_type: str) -> list[str]:
+    return [k for k, v in RUBRICS[case_type].items() if v.level == "stitch"]
+
+
+# Backward-compatible aliases (existing code/tests written against the
+# original single-rubric names) -- point at PJ/Whipple, the original set.
+SCALE_DEFS: dict[str, ScaleDef] = _PJ_WHIPPLE_SCALE_DEFS
+CASE_LEVEL_SCALES: list[str] = case_level_scales(CASE_TYPE_PJ_WHIPPLE)
+STITCH_LEVEL_SCALES: list[str] = stitch_level_scales(CASE_TYPE_PJ_WHIPPLE)
+RSS_SUBITEMS: list[str] = [k for k, v in _PJ_WHIPPLE_SCALE_DEFS.items() if v.group == "RSS"]
 
 # A cut clip is either a needle-driving "stitch" pass or a "knot_tying"
 # pass; PJ / yank / curve scores only apply to stitch clips.

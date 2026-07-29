@@ -13,9 +13,16 @@ Binary resolution order (see `_find_binary`):
   2. Whatever `ffmpeg`/`ffprobe` is found on the system PATH -- this is
      the normal path when running from source with
      `sudo apt install ffmpeg` / `brew install ffmpeg` / etc.
+  3. A handful of common install locations, checked directly even if not
+     on PATH. This matters because a macOS app launched by double-clicking
+     (Finder/Dock/Launchpad) gets a bare launchd PATH, NOT the shell's PATH
+     -- so Homebrew's /opt/homebrew/bin or /usr/local/bin (added to PATH
+     by .zshrc/.bash_profile) are invisible to it even though `ffmpeg`
+     works fine from Terminal.
 """
 from __future__ import annotations
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -62,11 +69,28 @@ def _bundled_binary(name: str) -> Optional[Path]:
     return None
 
 
+def _common_install_dirs() -> list[str]:
+    system = platform.system().lower()
+    if system == "darwin":
+        return ["/opt/homebrew/bin", "/usr/local/bin"]
+    if system == "windows":
+        return []  # Windows GUI apps do inherit the system/user PATH normally
+    return ["/usr/local/bin", "/usr/bin", "/snap/bin"]
+
+
 def _find_binary(name: str) -> Optional[str]:
     bundled = _bundled_binary(name)
     if bundled is not None:
         return str(bundled)
-    return shutil.which(name)
+    on_path = shutil.which(name)
+    if on_path:
+        return on_path
+    exe_name = f"{name}.exe" if platform.system().lower() == "windows" else name
+    for d in _common_install_dirs():
+        candidate = Path(d) / exe_name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def install_hint() -> str:
@@ -76,7 +100,12 @@ def install_hint() -> str:
     OS's instructions."""
     system = platform.system().lower()
     if system == "darwin":
-        return "Install with 'brew install ffmpeg' (Homebrew: https://brew.sh)."
+        return (
+            "Install with 'brew install ffmpeg' (Homebrew: https://brew.sh). "
+            "Already installed but still seeing this in a packaged app? Launch it from "
+            "Terminal (`open \"Surgical Annotation Studio.app\"`) instead of double-clicking -- "
+            "apps opened from Finder/Dock don't inherit Homebrew's PATH."
+        )
     if system == "windows":
         return ("Download a build from https://www.gyan.dev/ffmpeg/builds/ "
                  "(grab 'release essentials', unzip, and add its bin/ folder to PATH).")

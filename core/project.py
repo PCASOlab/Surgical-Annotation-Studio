@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
-from core.config import ProjectPaths, NEEDLE_BODYPARTS, TOOL_BODYPARTS, DEFAULT_SCORER
+from core.config import ProjectPaths, NEEDLE_BODYPARTS, TOOL_BODYPARTS, DEFAULT_SCORER, DEFAULT_CASE_TYPE
 
 
 @dataclass
@@ -60,6 +60,7 @@ class ProjectManager:
         self.paths = ProjectPaths(Path(root))
         self.config = ProjectConfig()
         self._stitches: dict[str, StitchMeta] = {}  # key: f"{case_id}/{stitch_id}"
+        self._case_types: dict[str, str] = {}  # case_id -> case type (see config.CASE_TYPES)
 
     # -- lifecycle ----------------------------------------------------
     @classmethod
@@ -145,15 +146,39 @@ class ProjectManager:
         self.config = c
 
     def _save_meta(self) -> None:
-        data = {k: asdict(v) for k, v in self._stitches.items()}
+        data = {
+            "stitches": {k: asdict(v) for k, v in self._stitches.items()},
+            "case_types": dict(self._case_types),
+        }
         self.paths.meta_json.write_text(json.dumps(data, indent=2))
 
     def _load_meta(self) -> None:
         if not self.paths.meta_json.exists():
             self._stitches = {}
+            self._case_types = {}
             return
         raw = json.loads(self.paths.meta_json.read_text())
-        self._stitches = {k: StitchMeta(**v) for k, v in raw.items()}
+        if "stitches" in raw:
+            # current format
+            self._stitches = {k: StitchMeta(**v) for k, v in raw["stitches"].items()}
+            self._case_types = dict(raw.get("case_types", {}))
+        else:
+            # older format: the whole file was just the flat stitches dict
+            self._stitches = {k: StitchMeta(**v) for k, v in raw.items()}
+            self._case_types = {}
+
+    # -- case type (which scoring rubric a case uses) -----------------------
+    def set_case_type(self, case_id: str, case_type: str) -> None:
+        if self._case_types.get(case_id) == case_type:
+            return
+        self._case_types[case_id] = case_type
+        self._save_meta()
+
+    def get_case_type(self, case_id: str) -> Optional[str]:
+        return self._case_types.get(case_id)
+
+    def get_case_type_or_default(self, case_id: str) -> str:
+        return self._case_types.get(case_id, DEFAULT_CASE_TYPE)
 
     # -- case / video discovery ----------------------------------------
     def list_source_videos(self) -> list[Path]:
