@@ -18,6 +18,7 @@ ffmpeg installed.
 ## Install
 
 ```bash
+cd Downloads/Surgical-Annotation-Studio/       # or however it is named/extracted from zip
 python3 -m venv .venv
 source .venv/bin/activate       # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
