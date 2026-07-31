@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QImage, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
-    QSpinBox, QSizePolicy, QDoubleSpinBox, QScrollArea,
+    QSpinBox, QSizePolicy, QDoubleSpinBox, QScrollArea, QLineEdit,
 )
 
 MIN_ZOOM = 0.25
@@ -38,6 +38,35 @@ def ms_to_timecode(ms: float) -> str:
     m, rem = divmod(rem, 60_000)
     s, ms_ = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d}.{ms_:03d}"
+
+
+def timecode_to_ms(text: str) -> Optional[float]:
+    """Parses a typed timestamp into milliseconds. Accepts HH:MM:SS.mmm,
+    MM:SS.mmm, or plain seconds (SS.mmm) -- the colons are optional
+    separators, and the fractional part is optional too. Returns None if
+    the text can't be parsed (caller should leave the field's contents
+    alone and flag it rather than seek anywhere)."""
+    text = text.strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if len(parts) > 3:
+        return None
+    try:
+        if len(parts) == 1:
+            seconds = float(parts[0])
+        elif len(parts) == 2:
+            minutes = int(parts[0])
+            seconds = minutes * 60 + float(parts[1])
+        else:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = hours * 3600 + minutes * 60 + float(parts[2])
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return seconds * 1000.0
 
 
 class VideoPlayerWidget(QWidget):
@@ -101,6 +130,13 @@ class VideoPlayerWidget(QWidget):
         self.frame_spin.setRange(0, 0)
         self.frame_spin.valueChanged.connect(self._on_spin_changed)
         controls.addWidget(self.frame_spin)
+
+        controls.addWidget(QLabel("Go to:"))
+        self.time_edit = QLineEdit()
+        self.time_edit.setPlaceholderText("HH:MM:SS.mmm")
+        self.time_edit.setMaximumWidth(100)
+        self.time_edit.returnPressed.connect(self._on_time_edit_entered)
+        controls.addWidget(self.time_edit)
 
         controls.addWidget(QLabel("Rate:"))
         self.rate_spin = QDoubleSpinBox()
@@ -285,6 +321,15 @@ class VideoPlayerWidget(QWidget):
     def _on_spin_changed(self, val: int) -> None:
         if val != self._cur_frame:
             self.seek_frame(val)
+
+    def _on_time_edit_entered(self) -> None:
+        ms = timecode_to_ms(self.time_edit.text())
+        if ms is None:
+            self.time_edit.setStyleSheet("background-color: #522;")
+            return
+        self.time_edit.setStyleSheet("")
+        self.seek_ms(ms)
+        self.time_edit.clear()
 
     # -- rendering ------------------------------------------------------
     def _display(self, frame_bgr: np.ndarray) -> None:

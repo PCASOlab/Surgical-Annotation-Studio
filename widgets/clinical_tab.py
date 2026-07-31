@@ -9,11 +9,13 @@ Two panels:
     review, not video annotation.
   - Right: a read-only review of every score entry -- case-level and
     per-stitch subitems alike, one row per subitem regardless of which
-    procedure's rubric it came from (see core.config.RUBRICS) -- already
-    saved to clinical/score_entries.csv. Entry happens in the
-    Preprocessing tab, right next to the video the rater is scoring --
-    this tab is for reviewing/auditing what's been recorded, not a second
-    entry point. Filter by case, or search all cases.
+    procedure's rubric it came from (see core.config.RUBRICS). Each
+    CASE's scores live in their own file
+    (clinical/score_entries_<case_id>.csv); this table merges all of them
+    for review, with an optional Case type filter. Scoring itself happens
+    in the Preprocessing tab (while cutting clips) or the 1.5 Existing
+    Clips tab (for clips already cut) -- this tab is for
+    reviewing/auditing what's been recorded, not a second entry point.
 
 PII columns (MRN, Progressive_Number) are stripped on load and never
 surfaced anywhere in this tab.
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 
+from core.config import CASE_TYPES, CASE_TYPE_LABELS
 from core.project import ProjectManager
 from io_utils import clinical_io
 
@@ -71,15 +74,23 @@ class ClinicalTab(QWidget):
         self.all_cases_check = QCheckBox("Show all cases")
         self.all_cases_check.toggled.connect(self._refresh_entries_table)
         row.addWidget(self.all_cases_check)
+        row.addWidget(QLabel("Case type:"))
+        self.case_type_filter = NoScrollComboBox()
+        self.case_type_filter.addItem("All", userData=None)
+        for ct in CASE_TYPES:
+            self.case_type_filter.addItem(CASE_TYPE_LABELS.get(ct, ct), userData=ct)
+        self.case_type_filter.currentIndexChanged.connect(self._refresh_entries_table)
+        row.addWidget(self.case_type_filter)
         btn_refresh = QPushButton("Refresh")
         btn_refresh.clicked.connect(self.refresh_cases)
         row.addWidget(btn_refresh)
         row.addStretch(1)
         right_l.addLayout(row)
 
-        self.entries_table = QTableWidget(0, 8)
+        self.entries_table = QTableWidget(0, 10)
         self.entries_table.setHorizontalHeaderLabels(
-            ["case_id", "case_type", "stitch", "rater", "scale", "subitem", "score", "notes"]
+            ["case_id", "case_type", "stitch", "rater", "scale", "subitem",
+             "score", "start", "stop", "notes"]
         )
         self.entries_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.entries_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -89,7 +100,9 @@ class ClinicalTab(QWidget):
             "(e.g. scale = OSATS/RSS/GEARS) have a blank stitch column; "
             "\"subitem\" shows which one (e.g. osats_gentle, rss_knot, "
             "gears_autonomy). Stitch-level rows (e.g. PJ, yank_factor, "
-            "stitch_location) show the stitch ID."
+            "stitch_location) show the stitch ID and its start/stop offset "
+            "(seconds) into the original video. Each case is saved to its "
+            "own file (clinical/score_entries_<case_id>.csv)."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #888;")
@@ -163,10 +176,16 @@ class ClinicalTab(QWidget):
 
     # -- score entry review ---------------------------------------------------
     def _refresh_entries_table(self) -> None:
-        df = clinical_io.load_score_entries(self.pm.paths.clinical)
         case_id = self.case_combo.currentText()
-        if not df.empty and case_id and not self.all_cases_check.isChecked():
-            df = df[df["case_id"].astype(str) == str(case_id)]
+        if case_id and not self.all_cases_check.isChecked():
+            df = clinical_io.load_score_entries(self.pm.paths.clinical, case_id=case_id)
+        else:
+            df = clinical_io.load_score_entries(self.pm.paths.clinical)
+
+        case_type = self.case_type_filter.currentData()
+        if case_type and not df.empty and "case_type" in df.columns:
+            df = df[df["case_type"] == case_type]
+
         self.entries_table.setRowCount(len(df))
 
         def clean(val) -> str:
@@ -182,4 +201,6 @@ class ClinicalTab(QWidget):
             self.entries_table.setItem(i, 4, QTableWidgetItem(clean(r.get("scale"))))
             self.entries_table.setItem(i, 5, QTableWidgetItem(clean(r.get("hogg_var"))))
             self.entries_table.setItem(i, 6, QTableWidgetItem(clean(r.get("score"))))
-            self.entries_table.setItem(i, 7, QTableWidgetItem(clean(r.get("notes"))))
+            self.entries_table.setItem(i, 7, QTableWidgetItem(clean(r.get("start"))))
+            self.entries_table.setItem(i, 8, QTableWidgetItem(clean(r.get("stop"))))
+            self.entries_table.setItem(i, 9, QTableWidgetItem(clean(r.get("notes"))))

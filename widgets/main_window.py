@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from core.project import ProjectManager, ProjectConfig
 from widgets.dashboard_tab import DashboardTab
 from widgets.preprocessing_tab import PreprocessingTab
+from widgets.existing_clips_tab import ExistingClipsTab
 from widgets.keypoint_tab import KeypointTab
 from widgets.semantic_tab import SemanticTab
 from widgets.clinical_tab import ClinicalTab
@@ -60,12 +61,14 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.dashboard_tab = DashboardTab(pm)
         self.preprocessing_tab = PreprocessingTab(pm)
+        self.existing_clips_tab = ExistingClipsTab(pm)
         self.keypoint_tab = KeypointTab(pm)
         self.semantic_tab = SemanticTab(pm)
         self.clinical_tab = ClinicalTab(pm)
 
         self.tabs.addTab(_wrap_scrollable(self.dashboard_tab), "Dashboard")
         self.tabs.addTab(_wrap_scrollable(self.preprocessing_tab), "1. Preprocessing")
+        self.tabs.addTab(_wrap_scrollable(self.existing_clips_tab), "1.5 Existing Clips")
         self.tabs.addTab(_wrap_scrollable(self.keypoint_tab), "2. Keypoints (DLC)")
         self.tabs.addTab(_wrap_scrollable(self.semantic_tab), "3. Semantic States")
         self.tabs.addTab(_wrap_scrollable(self.clinical_tab), "4. Clinical")
@@ -122,6 +125,8 @@ class MainWindow(QMainWindow):
         widget = wrapper.widget() if isinstance(wrapper, QScrollArea) else wrapper
         if isinstance(widget, DashboardTab):
             widget.refresh()
+        elif isinstance(widget, ExistingClipsTab):
+            widget.refresh_cases()
         elif isinstance(widget, KeypointTab):
             widget.refresh_cases()
         elif isinstance(widget, SemanticTab):

@@ -67,7 +67,7 @@ class StitchRow:
         return [(t, e) for (t, e) in self.events if t is not None and e]
 
 
-def _time_to_seconds(t) -> Optional[float]:
+def time_to_seconds(t) -> Optional[float]:
     if t is None:
         return None
     if not isinstance(t, time):
@@ -207,7 +207,7 @@ def validate_events(events: list[tuple[time, str]]) -> list[str]:
                 f"This usually means a typo (e.g. '13.19.73' instead of a time) -- fix the cell."
             )
 
-    secs = [_time_to_seconds(t) for t, _ in events]
+    secs = [time_to_seconds(t) for t, _ in events]
     labels = [e for _, e in events]
 
     # non-decreasing left-to-right
@@ -306,3 +306,25 @@ def validate_events(events: list[tuple[time, str]]) -> list[str]:
         problems.append(f"{open_cam} CAM_REPOSITION_START event(s) never closed by CAM_REPOSITION_END.")
 
     return problems
+
+
+def find_existing_stitch_timing(
+    semantic_dir: Path, case_id: str, stitch_id: str
+) -> Optional[tuple[float, float]]:
+    """Looks across every *_PJ_d2m_semantic_*.xlsx already saved for
+    `case_id` for a row matching `stitch_id` (pcaso_var), and returns its
+    (start, stop) in seconds in the ORIGINAL video's timebase, if found.
+    Used by the Existing Clips tab to recover accurate cut-offset metadata
+    for a clip that's already been cut (and possibly already annotated)
+    outside this tool, rather than guessing 0/duration."""
+    if not semantic_dir.exists():
+        return None
+    for path in sorted(semantic_dir.glob(f"{case_id}_PJ_d2m_semantic_*.xlsx")):
+        for row in read_rows(path):
+            if row.pcaso_var != stitch_id:
+                continue
+            start_sec = time_to_seconds(row.start)
+            stop_sec = time_to_seconds(row.stop)
+            if start_sec is not None and stop_sec is not None:
+                return start_sec, stop_sec
+    return None

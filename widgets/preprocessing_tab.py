@@ -598,17 +598,20 @@ class PreprocessingTab(QWidget):
             scores = clip.get("scores") or {}
             if clip["clip_type"] == "stitch" and scores:
                 self._append_score_values(
-                    case_id, clip["case_type"], rater, clip["stitch_id"], scores
+                    case_id, clip["case_type"], rater, clip["stitch_id"], scores,
+                    start=clip["start_ms"] / 1000.0, stop=clip["end_ms"] / 1000.0,
                 )
         self.pm.set_case_type(case_id, self._current_case_type())
         self._log(f"Done. {len(results)} clip(s) written to pose/{case_id}/ and registered "
-                  f"(scores saved to clinical/score_entries.csv for stitch clips).")
+                  f"(scores saved to clinical/score_entries_{self._current_case_type()}.csv "
+                  f"for stitch clips).")
         self.clip_table.setRowCount(0)
         self._pending_clips.clear()
 
     # -- score writing (generic: one row per subitem, any case type) -------------
     def _append_score_values(self, case_id: str, case_type: str, rater: str,
-                              video_id_annot: str, values: dict[str, int]) -> None:
+                              video_id_annot: str, values: dict[str, int],
+                              start: Optional[float] = None, stop: Optional[float] = None) -> None:
         rubric = config.RUBRICS.get(case_type, {})
         for scale_name, value in values.items():
             d = rubric.get(scale_name)
@@ -623,6 +626,8 @@ class PreprocessingTab(QWidget):
                 "item": d.item,
                 "hogg_var": scale_name,
                 "score": value,
+                "start": "" if start is None else f"{start:.3f}",
+                "stop": "" if stop is None else f"{stop:.3f}",
             })
 
     # -- case-level scoring ---------------------------------------------------

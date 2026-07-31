@@ -2,12 +2,8 @@
 
 A desktop app for annotating surgical videos in one place: cut case
 videos into clips, label needle/tool keypoints, mark the semantic-state
-timeline, and score technical skill -- all without
+timeline, and score technical skill (OSATS/RSS/PJ) -- all without
 switching between separate tools.
-
-Procedures:
-- Pancreaticojejunostomy (Whipple) - OSATS/RSS/PJ + stitch-level
-- Paraesophageal Hernia (PEH) - OSATS/RSS/GEARS + stitch-level
 
 Built and most tested on Linux; also runs on macOS and Windows with
 ffmpeg installed.
@@ -22,7 +18,6 @@ ffmpeg installed.
 ## Install
 
 ```bash
-cd Downloads/Surgical-Annotation-Studio/       # or however it is named/extracted from zip
 python3 -m venv .venv
 source .venv/bin/activate       # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
@@ -101,7 +96,32 @@ See every case in the project and how much work is done on each
    Adding a new procedure's rubric later is a config change, not a code
    change -- see `core/config.py`'s `RUBRICS` registry.
 6. Use the **Zoom** controls or **Ctrl+scroll** to zoom into the video;
-   drag the scrollbars to pan.
+   drag the scrollbars to pan. Every video player in the app (this tab,
+   Semantic States, Keypoints) also has a **Go to:** field next to Frame
+   -- type a timestamp (`1:23.5`, `01:23:45.678`, or plain seconds) and
+   press Enter to jump there instead of only scrubbing.
+
+### 1.5 Existing Clips
+For clips that are already cut and sitting in `pose/<case_id>/*.mp4` --
+e.g. a whole PEH dataset where every stitch has already been isolated --
+and just need clinical scores assigned, without re-running the
+Preprocessing tab's import/cut workflow. No registration step needed --
+if the clip file is there, it shows up here.
+
+Laid out like the Semantic States tab: pick a **Case** and a
+**Stitch/clip**, watch the video at the top, then fill in scores below --
+**Case-level** (once per case) and/or **Scores for this clip**
+(stitch-level), with fields depending on the **Case type** (same rubrics
+as the Preprocessing tab). Set a **Rater** name, then:
+- **Load existing case-level scores** / **Load existing scores for this
+  clip** pulls back whatever's already saved so it can be reviewed.
+- Change a value and save again -- it replaces the old value in place
+  rather than creating a duplicate row.
+- Switching case/clip automatically saves whatever was filled in first,
+  so nothing is lost from forgetting to click Save.
+
+Each case's scores are saved to their own file
+(`clinical/score_entries_<case_id>.csv`), reviewable in the Clinical tab.
 
 ### 2. Keypoints (DLC)
 Pick a case and clip, then click to place each keypoint in order (shown
@@ -145,7 +165,7 @@ Preprocessing tab -- this tab is for reviewing, not entering scores.
   pose/<case_id>/    standardized video + cut clips
   labeled-data/       DeepLabCut keypoint labels + images
   semantic/          semantic-state annotations (one file per case + rater)
-  clinical/          clinical CSV + score_entries.csv
+  clinical/          clinical CSV + score_entries_<case_id>.csv (one per case)
   config.yaml        project settings (bodyparts, scorer, target fps/resolution)
 ```
 

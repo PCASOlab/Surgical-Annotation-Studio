@@ -198,6 +198,27 @@ class ProjectManager:
             return []
         return sorted(p for p in case_dir.glob("*.mp4") if not p.name.startswith("_full_standardized"))
 
+    def list_unregistered_clips(self) -> dict[str, list[Path]]:
+        """Every clip file sitting under pose/<case_id>/*.mp4 that has NO
+        matching StitchMeta entry yet -- e.g. clips that were cut by hand,
+        by an older pipeline, or copied in from another project, rather
+        than through this app's own Preprocessing tab. Keyed by case_id."""
+        if not self.paths.pose.exists():
+            return {}
+        result: dict[str, list[Path]] = {}
+        for case_dir in sorted(p for p in self.paths.pose.iterdir() if p.is_dir()):
+            case_id = case_dir.name
+            unregistered = []
+            for clip_path in sorted(case_dir.glob("*.mp4")):
+                if clip_path.name.startswith("_full_standardized"):
+                    continue
+                stitch_id = clip_path.stem
+                if self.get_stitch_meta(case_id, stitch_id) is None:
+                    unregistered.append(clip_path)
+            if unregistered:
+                result[case_id] = unregistered
+        return result
+
     def register_stitch(self, meta: StitchMeta) -> None:
         self._stitches[f"{meta.case_id}/{meta.stitch_id}"] = meta
         self._save_meta()
