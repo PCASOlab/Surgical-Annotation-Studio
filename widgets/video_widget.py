@@ -21,7 +21,7 @@ from typing import Optional
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QImage, QPixmap, QWheelEvent
+from PySide6.QtGui import QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
     QSpinBox, QSizePolicy, QDoubleSpinBox, QScrollArea, QLineEdit,
@@ -72,6 +72,8 @@ def timecode_to_ms(text: str) -> Optional[float]:
 class VideoPlayerWidget(QWidget):
     frameChanged = Signal(int)         # current frame index
     positionMsChanged = Signal(float)  # current position in ms
+    markStartRequested = Signal()      # "I" pressed -- caller decides what "start" means
+    markEndRequested = Signal()        # "O" pressed -- caller decides what "end" means
 
     def __init__(self, parent=None, min_height: int = DEFAULT_VIDEO_MIN_HEIGHT,
                  show_zoom_controls: bool = True):
@@ -91,6 +93,28 @@ class VideoPlayerWidget(QWidget):
         self._timer.timeout.connect(self._on_tick)
 
         self._build_ui()
+        self._build_shortcuts()
+
+    # -- keyboard shortcuts ------------------------------------------------
+    def _build_shortcuts(self) -> None:
+        """Default (window-scoped) QShortcut context, same as the F11/Ctrl+M
+        shortcuts in main_window.py -- these fire whenever this player's tab
+        is the active one, without requiring the video area itself to have
+        focus. Text-editing widgets (QLineEdit/QSpinBox) claim plain
+        arrows/letters/space for themselves via Qt's shortcut-override
+        protocol, so typing in e.g. the "Go to:" field is unaffected."""
+        def _shortcut(seq: str, slot) -> QShortcut:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(slot)
+            return sc
+
+        self._sc_step_back = _shortcut("Left", lambda: self.step(-1))
+        self._sc_step_fwd = _shortcut("Right", lambda: self.step(1))
+        self._sc_step_back_10 = _shortcut("Shift+Left", lambda: self.step(-10))
+        self._sc_step_fwd_10 = _shortcut("Shift+Right", lambda: self.step(10))
+        self._sc_play_pause = _shortcut("Space", self.toggle_play)
+        self._sc_mark_start = _shortcut("I", self.markStartRequested.emit)
+        self._sc_mark_end = _shortcut("O", self.markEndRequested.emit)
 
     # -- UI ---------------------------------------------------------
     def _build_ui(self) -> None:
@@ -174,6 +198,10 @@ class VideoPlayerWidget(QWidget):
 
         self.time_label = QLabel("00:00:00.000")
         self.time_label.setStyleSheet("font-family: monospace; font-size: 13px;")
+        self.time_label.setToolTip(
+            "Shortcuts: ←/→ step 1 frame, Shift+←/→ step 10 frames, "
+            "Space play/pause, I/O mark start/end"
+        )
         controls.addWidget(self.time_label)
         controls.addStretch(1)
         layout.addLayout(controls)

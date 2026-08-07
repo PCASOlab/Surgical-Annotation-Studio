@@ -329,6 +329,13 @@ _PEH_SCALE_DEFS: dict[str, ScaleDef] = {
         option_labels={1: "1 \u2013 Poor: hesitant, tissue trauma, or multiple passes",
                        2: "2 \u2013 Average: minor inefficiencies, single-pass success",
                        3: "3 \u2013 Excellent: efficient, precise, consistent single-pass"}),
+    # Same 1-3 scale as crural_suturing_skill, scored per stitch, but
+    # assessing knot-tying technique specifically rather than the suture pass.
+    "knot_tying_skill": ScaleDef(
+        level="stitch", lo=1, hi=3, better="higher", group="KNOT_TYING_SKILL",
+        option_labels={1: "1 \u2013 Poor: hesitant, tissue trauma, or multiple attempts",
+                       2: "2 \u2013 Average: minor inefficiencies, secure on first attempt",
+                       3: "3 \u2013 Excellent: efficient, precise, consistently secure"}),
 }
 
 # ---------------------------------------------------------------------------

@@ -169,6 +169,8 @@ class PreprocessingTab(QWidget):
 
         left = QVBoxLayout()
         self.player = VideoPlayerWidget(min_height=PREPROC_VIDEO_MIN_HEIGHT)
+        self.player.markStartRequested.connect(self._set_start)
+        self.player.markEndRequested.connect(self._set_end)
         left.addWidget(self.player, stretch=1)
 
         cut_row1 = QHBoxLayout()
@@ -182,12 +184,12 @@ class PreprocessingTab(QWidget):
         self.stitch_id_edit = QLineEdit()
         self.stitch_id_edit.setPlaceholderText("e.g. stitch_01 / knot_01")
         cut_row1.addWidget(self.stitch_id_edit)
-        self.btn_set_start = QPushButton("Set start = playhead")
+        self.btn_set_start = QPushButton("Set start = playhead (I)")
         self.btn_set_start.clicked.connect(self._set_start)
         cut_row1.addWidget(self.btn_set_start)
         self.start_label = QLabel("start: --")
         cut_row1.addWidget(self.start_label)
-        self.btn_set_end = QPushButton("Set end = playhead")
+        self.btn_set_end = QPushButton("Set end = playhead (O)")
         self.btn_set_end.clicked.connect(self._set_end)
         cut_row1.addWidget(self.btn_set_end)
         self.end_label = QLabel("end: --")
