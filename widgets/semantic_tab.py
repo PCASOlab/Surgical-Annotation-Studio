@@ -28,7 +28,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QPlainTextEdit, QTextEdit, QGroupBox,
+    QMessageBox, QPlainTextEdit, QTextEdit, QGroupBox, QAbstractItemView,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 
@@ -97,6 +97,10 @@ class SemanticTab(QWidget):
         self.event_table = QTableWidget(0, 2)
         self.event_table.setHorizontalHeaderLabels(["Time (clip-relative)", "Event"])
         self.event_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.event_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.event_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.event_table.verticalHeader().sectionDoubleClicked.connect(self._seek_to_event_row)
+        self.player.positionMsChanged.connect(self._sync_highlight_to_playhead)
         mid.addWidget(self.event_table, stretch=2)
 
         side = QVBoxLayout()
@@ -279,6 +283,29 @@ class SemanticTab(QWidget):
         for r, (ms, label) in enumerate(self._events):
             self.event_table.setItem(r, 0, QTableWidgetItem(ms_to_timecode(ms)))
             self.event_table.setItem(r, 1, QTableWidgetItem(label))
+        if not self._events:
+            self.event_table.clearSelection()
+            return
+        self._sync_highlight_to_playhead(self.player.current_ms())
+
+    def _seek_to_event_row(self, row: int) -> None:
+        if not 0 <= row < len(self._events):
+            return
+        ms, _ = self._events[row]
+        self.player.seek_ms(ms)
+
+    def _sync_highlight_to_playhead(self, ms: float) -> None:
+        if not self._events:
+            self.event_table.clearSelection()
+            return
+        row = min(
+            range(len(self._events)),
+            key=lambda i: abs(self._events[i][0] - ms),
+        )
+        self.event_table.setCurrentCell(row, 0)
+        item = self.event_table.item(row, 0)
+        if item is not None:
+            self.event_table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
 
     def _selected_row(self) -> int | None:
         rows = {idx.row() for idx in self.event_table.selectedIndexes()}
