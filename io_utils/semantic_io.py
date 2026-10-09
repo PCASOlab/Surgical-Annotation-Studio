@@ -273,7 +273,9 @@ def validate_events(events: list[tuple[time, str]]) -> list[str]:
             if tail_exit_count_since_entry > 1:
                 problems.append(f"Event {i+1}: more than one TAIL_EXIT since the last TIP_ENTRY.")
 
-    # READJUSTMENT_START must end at READJUSTMENT_END or TIP_WITHDRAWAL_NEAR; no overlaps
+    # READJUSTMENT_START must end at READJUSTMENT_END or TIP_WITHDRAWAL_NEAR; no overlaps.
+    # TIP_WITHDRAWAL_NEAR validly closes an active readjustment even if other
+    # labels (e.g. CAM_REPOSITION_* or other intermediate events) occur in between.
     open_readj: Optional[int] = None
     for i, l in enumerate(labels):
         if l == "READJUSTMENT_START":
@@ -284,8 +286,12 @@ def validate_events(events: list[tuple[time, str]]) -> list[str]:
             if l == "READJUSTMENT_END":
                 if open_readj is None:
                     problems.append(f"Event {i+1}: READJUSTMENT_END with no matching READJUSTMENT_START.")
-                else:
-                    open_readj = None
+                    continue
+            elif open_readj is None:
+                # A stray tip withdrawal near does not itself create or demand a
+                # readjustment; it only closes an active one when present.
+                continue
+            open_readj = None
     if open_readj is not None:
         problems.append(
             f"Event {open_readj+1}: READJUSTMENT_START is never closed by "
