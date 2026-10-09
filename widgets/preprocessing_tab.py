@@ -6,12 +6,12 @@ Three jobs, top to bottom:
      fps/resolution (matches the 640x360 / LANCZOS convention already used
      for DLC training frames elsewhere in the project).
   2. Scrub the (standardized) case video and cut out individual clips --
-     either "stitch" (needle) or "knot_tying" passes -- by setting in/out
-     points. Clips are written to pose/<case_id>/<stitch_id>.mp4 and
-     registered in project_meta.json with their offset into the source
-     video's timebase (needed by the Semantic tab) *and* the ORIGINAL
-     source video's native resolution/fps (needed by any downstream code
-     doing coordinate-space rescaling back to native pixels).
+      either "stitch" (needle) or "knot_tying" passes -- by setting in/out
+      points. Clips are written to pose/<case_id>/<case_id>_<stitch_id>.mp4
+      and registered in project_meta.json with their offset into the source
+      video's timebase (needed by the Semantic tab) *and* the ORIGINAL
+      source video's native resolution/fps (needed by any downstream code
+      doing coordinate-space rescaling back to native pixels).
   3. Score each stitch (and the case overall) right here while its video
      is on screen. Which scoring fields appear depends on the selected
      **Case type** (e.g. PJ/Whipple vs PEH) -- see core.config.RUBRICS.
@@ -51,6 +51,10 @@ PREPROC_VIDEO_MIN_HEIGHT = 560
 # field is empty or still holds an unedited prefix (from having switched
 # clip type) -- never overwrites something the user actually typed.
 CLIP_TYPE_PREFIXES = {"stitch": "stitch_", "knot_tying": "knot_"}
+
+
+def _pose_stitch_filename(case_id: str, stitch_id: str) -> str:
+    return f"{case_id}_{stitch_id}.mp4"
 
 
 def _make_scale_combo(scale_def: ScaleDef) -> QComboBox:
@@ -556,7 +560,7 @@ class PreprocessingTab(QWidget):
         def job(on_log=None, on_progress=None):
             results = []
             for i, clip in enumerate(clips):
-                dst = dst_dir / f"{clip['stitch_id']}.mp4"
+                dst = dst_dir / _pose_stitch_filename(case_id, clip["stitch_id"])
                 ffmpeg_utils.cut_clip(
                     cut_source, dst,
                     start_sec=clip["start_ms"] / 1000.0, end_sec=clip["end_ms"] / 1000.0,
@@ -583,8 +587,9 @@ class PreprocessingTab(QWidget):
                       source_info: Optional[ffmpeg_utils.VideoInfo], results: list) -> None:
         rater = self.rater_edit.text().strip()
         for clip, dst, info in results:
+            saved_stitch_id = f"{case_id}_{clip['stitch_id']}"
             meta = StitchMeta(
-                case_id=case_id, stitch_id=clip["stitch_id"],
+                case_id=case_id, stitch_id=saved_stitch_id,
                 clip_path=str(dst.relative_to(self.pm.paths.root)),
                 source_video=str(source_video_path.relative_to(self.pm.paths.root)),
                 start_sec_in_source=clip["start_ms"] / 1000.0,
@@ -600,7 +605,7 @@ class PreprocessingTab(QWidget):
             scores = clip.get("scores") or {}
             if clip["clip_type"] == "stitch" and scores:
                 self._append_score_values(
-                    case_id, clip["case_type"], rater, clip["stitch_id"], scores,
+                    case_id, clip["case_type"], rater, saved_stitch_id, scores,
                     start=clip["start_ms"] / 1000.0, stop=clip["end_ms"] / 1000.0,
                 )
         self.pm.set_case_type(case_id, self._current_case_type())

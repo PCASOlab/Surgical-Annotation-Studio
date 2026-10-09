@@ -24,7 +24,7 @@ from pathlib import Path
 from datetime import time as dtime
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QBrush, QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -281,8 +281,10 @@ class SemanticTab(QWidget):
     def _refresh_event_table(self) -> None:
         self.event_table.setRowCount(len(self._events))
         for r, (ms, label) in enumerate(self._events):
-            self.event_table.setItem(r, 0, QTableWidgetItem(ms_to_timecode(ms)))
-            self.event_table.setItem(r, 1, QTableWidgetItem(label))
+            time_item = QTableWidgetItem(ms_to_timecode(ms))
+            label_item = QTableWidgetItem(label)
+            self.event_table.setItem(r, 0, time_item)
+            self.event_table.setItem(r, 1, label_item)
         if not self._events:
             self.event_table.clearSelection()
             return
@@ -298,14 +300,47 @@ class SemanticTab(QWidget):
         if not self._events:
             self.event_table.clearSelection()
             return
-        row = min(
-            range(len(self._events)),
-            key=lambda i: abs(self._events[i][0] - ms),
-        )
-        self.event_table.setCurrentCell(row, 0)
-        item = self.event_table.item(row, 0)
+        active_row = -1
+        for idx, (event_ms, _) in enumerate(self._events):
+            if event_ms <= ms:
+                active_row = idx
+            else:
+                break
+
+        self._apply_event_row_styles(active_row)
+
+        if active_row < 0:
+            self.event_table.clearSelection()
+            return
+
+        self.event_table.setCurrentCell(active_row, 0)
+        item = self.event_table.item(active_row, 0)
         if item is not None:
             self.event_table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def _apply_event_row_styles(self, active_row: int) -> None:
+        past_background = QColor("#eef3fb")
+        active_background = QColor("#ffe39f")
+
+        for row in range(self.event_table.rowCount()):
+            is_past = 0 <= active_row and row < active_row
+            is_active = row == active_row
+            for column in range(self.event_table.columnCount()):
+                item = self.event_table.item(row, column)
+                if item is None:
+                    continue
+                item.setBackground(QBrush())
+                item.setForeground(QBrush())
+                font = item.font()
+                font.setBold(False)
+                item.setFont(font)
+                if is_past:
+                    item.setBackground(past_background)
+                elif is_active:
+                    item.setBackground(active_background)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
 
     def _selected_row(self) -> int | None:
         rows = {idx.row() for idx in self.event_table.selectedIndexes()}

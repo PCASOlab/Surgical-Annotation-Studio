@@ -54,6 +54,14 @@ QUALITY_CHECK_TEXT = [
 TIME_NUMBER_FORMAT = "mm:ss.00"
 
 
+def _clear_row_cells(ws: Worksheet, row_idx: int) -> None:
+    """Remove any existing cells from a row so rewritten data cannot leave
+    stale values behind when the new row is shorter than the old one."""
+    for key in list(ws._cells):
+        if key[0] == row_idx:
+            del ws._cells[key]
+
+
 @dataclass
 class StitchRow:
     file: str
@@ -169,6 +177,10 @@ def upsert_row(xlsx_path: Path, new_row: StitchRow) -> None:
         raise ValueError(
             f"{new_row.pcaso_var}: {len(events)} events exceeds MAX_EVENT_PAIRS={MAX_EVENT_PAIRS}"
         )
+
+    # Clear the destination row first so a shorter overwrite cannot leave
+    # stale values from a previously longer stitch entry to the right.
+    _clear_row_cells(ws, target_row_idx)
 
     ws.cell(row=target_row_idx, column=1, value=new_row.file)
     ws.cell(row=target_row_idx, column=2, value=new_row.pcaso_var)
