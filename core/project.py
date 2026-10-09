@@ -105,7 +105,7 @@ class ProjectManager:
             f"target_width: {c.target_width}",
             f"target_height: {c.target_height}",
         ]
-        self.paths.config_yaml.write_text("\n".join(lines) + "\n")
+        self.paths.config_yaml.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _load_config_yaml(self) -> None:
         if not self.paths.config_yaml.exists():
@@ -113,7 +113,7 @@ class ProjectManager:
         c = ProjectConfig()
         bodyparts: list[str] = []
         in_bodyparts = False
-        for raw in self.paths.config_yaml.read_text().splitlines():
+        for raw in self.paths.config_yaml.read_text(encoding="utf-8").splitlines():
             line = raw.rstrip()
             if not line:
                 continue
@@ -150,14 +150,14 @@ class ProjectManager:
             "stitches": {k: asdict(v) for k, v in self._stitches.items()},
             "case_types": dict(self._case_types),
         }
-        self.paths.meta_json.write_text(json.dumps(data, indent=2))
+        self.paths.meta_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def _load_meta(self) -> None:
         if not self.paths.meta_json.exists():
             self._stitches = {}
             self._case_types = {}
             return
-        raw = json.loads(self.paths.meta_json.read_text())
+        raw = json.loads(self.paths.meta_json.read_text(encoding="utf-8"))
         if "stitches" in raw:
             # current format
             self._stitches = {k: StitchMeta(**v) for k, v in raw["stitches"].items()}

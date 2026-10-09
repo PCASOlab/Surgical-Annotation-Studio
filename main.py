@@ -3,13 +3,13 @@
 Surgical Annotation Studio -- entry point.
 
 Run with:
-    python3 main.py
+    python main.py
 or, after chmod +x main.py:
     ./main.py
 
 Optionally pass a project directory directly to skip the open/create
 dialog:
-    python3 main.py /path/to/project
+    python main.py /path/to/project
 """
 from __future__ import annotations
 import ctypes.util
@@ -20,7 +20,9 @@ from pathlib import Path
 # On Linux, Qt may use the XCB backend even when no real display is available,
 # and the xcb-cursor library is often missing in slim/container images. Fall
 # back to the offscreen backend in those cases so the app still launches.
-if not os.environ.get("QT_QPA_PLATFORM"):
+# Windows and macOS never set DISPLAY, so this must stay Linux-only or the
+# app would silently run headless there.
+if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORM"):
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     has_xcb_cursor = ctypes.util.find_library("xcb-cursor") is not None
     if not has_display or not has_xcb_cursor:

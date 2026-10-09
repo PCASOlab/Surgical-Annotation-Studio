@@ -147,7 +147,10 @@ def probe_video(path: Path) -> VideoInfo:
         "-show_entries", "format=duration",
         "-of", "json", str(path),
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    # ffmpeg/ffprobe emit UTF-8; without an explicit encoding Windows decodes
+    # with the ANSI codepage and chokes on non-ASCII metadata.
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                         encoding="utf-8", errors="replace")
     data = json.loads(out.stdout)
     stream = data["streams"][0]
     fmt = data.get("format", {})
@@ -176,7 +179,8 @@ def probe_video(path: Path) -> VideoInfo:
 
 def _run(cmd: list[str], on_log: Optional[Callable[[str], None]] = None) -> None:
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, bufsize=1)
+                             text=True, encoding="utf-8", errors="replace",
+                             bufsize=1)
     assert proc.stdout is not None
     for line in proc.stdout:
         if on_log:

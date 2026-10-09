@@ -44,7 +44,7 @@ def read_collected_data(
     x/y are None if the keypoint wasn't labeled on that frame."""
     if not csv_path.exists():
         return list(NEEDLE_BODYPARTS), {}
-    with open(csv_path, newline="") as f:
+    with open(csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
     if len(rows) < 3:
         return list(NEEDLE_BODYPARTS), {}
@@ -88,7 +88,7 @@ def write_collected_data(
             row.append("" if x is None else repr(float(x)))
             row.append("" if y is None else repr(float(y)))
         rows.append(row)
-    with open(csv_path, "w", newline="") as f:
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerows(rows)
 

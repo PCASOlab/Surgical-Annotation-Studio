@@ -10,11 +10,25 @@ From the repo root, on the machine/OS you want to build *for* (PyInstaller
 builds for the OS it's running on -- you can't cross-build a Windows .exe
 from macOS or vice versa):
 
+macOS:
+
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate        # .venv\Scripts\activate on Windows
+source .venv/bin/activate
 pip install -r requirements.txt -r requirements-build.txt
 ```
+
+Windows (PowerShell):
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt -r requirements-build.txt
+```
+
+The main README explains why Windows uses `py` and what to do if
+`Activate.ps1` is blocked. With the venv active, use `python` for the
+commands below on both OSes.
 
 ## 2. (Optional but recommended) Bundle ffmpeg
 
@@ -46,7 +60,7 @@ download from gyan.dev and add to PATH).
 ## 3. Build
 
 ```bash
-python3 packaging/build.py
+python packaging/build.py
 ```
 
 Output goes to `dist/Surgical Annotation Studio/`. On macOS this includes

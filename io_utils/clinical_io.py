@@ -129,13 +129,13 @@ def all_score_entry_files(clinical_dir: Path) -> list[Path]:
 def _read_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=SCORE_ENTRIES_COLUMNS)
         w.writeheader()
         for row in rows:
