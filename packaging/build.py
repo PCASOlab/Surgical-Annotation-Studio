@@ -39,6 +39,12 @@ def _platform_dir_name() -> str:
 
 
 def main() -> int:
+    base = getattr(sys, "_base_executable", sys.executable)
+    if platform.system().lower() == "windows" and "WindowsApps" in base:
+        print(f"This is the Microsoft Store Python ({base}), which PyInstaller "
+              f"doesn't handle well.\nCreate the venv from a python.org install "
+              f"instead:\n  py setup_venv.py --build --recreate", file=sys.stderr)
+        return 1
     if shutil.which("pyinstaller") is None:
         print("PyInstaller not found. Install it with:\n"
               "  pip install -r requirements-build.txt", file=sys.stderr)

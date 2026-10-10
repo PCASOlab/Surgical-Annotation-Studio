@@ -10,25 +10,22 @@ From the repo root, on the machine/OS you want to build *for* (PyInstaller
 builds for the OS it's running on -- you can't cross-build a Windows .exe
 from macOS or vice versa):
 
-macOS:
-
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt -r requirements-build.txt
+py setup_venv.py --build          # Windows
+python3 setup_venv.py --build     # macOS
 ```
 
-Windows (PowerShell):
+Then activate the venv with the command it prints. `--build` adds
+PyInstaller on top of the app's own packages.
 
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt -r requirements-build.txt
-```
+The script avoids the two Windows problems that break the build: it uses
+a python.org Python rather than the Microsoft Store one (PyInstaller has
+trouble with the Store version's sandboxed paths), and it moves the venv
+to a short path if the repo folder is too deep for PySide6's long file
+paths. `build.py` also refuses to run under the Store Python. The main
+README has details and manual setup steps.
 
-The main README explains why Windows uses `py` and what to do if
-`Activate.ps1` is blocked. With the venv active, use `python` for the
-commands below on both OSes.
+With the venv active, use `python` for the commands below on both OSes.
 
 ## 2. (Optional but recommended) Bundle ffmpeg
 
