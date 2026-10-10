@@ -17,19 +17,26 @@ Three jobs, top to bottom:
      **Case type** (e.g. PJ/Whipple vs PEH) -- see core.config.RUBRICS.
      A case's chosen type is remembered (ProjectManager.set_case_type) so
      re-opening it later shows the same rubric automatically.
+
+The clip list (in/out points + per-stitch scores) is saved to
+pose/<case_id>/_clip_list_draft.json on every add/remove, so a crash, a
+failed cut or closing the app doesn't lose it. It's restored when that
+case is selected again and deleted once its clips are cut successfully.
 """
 from __future__ import annotations
+import json
 import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
     QPushButton, QSpinBox, QFileDialog, QListWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QPlainTextEdit, QComboBox,
-    QFormLayout, QLayout, QScrollArea,
+    QFormLayout, QLayout, QScrollArea, QAbstractItemView,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 
@@ -51,6 +58,27 @@ PREPROC_VIDEO_MIN_HEIGHT = 560
 # field is empty or still holds an unedited prefix (from having switched
 # clip type) -- never overwrites something the user actually typed.
 CLIP_TYPE_PREFIXES = {"stitch": "stitch_", "knot_tying": "knot_"}
+
+CLIP_LIST_DRAFT_FILENAME = "_clip_list_draft.json"
+
+# Clip highlight shared by the table rows and the timeline bands, so the
+# same clip reads the same color in both places.
+CLIP_HIGHLIGHT = QColor("#ffe39f")
+TIMELINE_EDITING = QColor("#ff8c00")
+TIMELINE_PENDING = QColor(40, 167, 69, 200)  # green, matches the "set" mark chips
+
+# start/end mark chips: not set / set / invalid (end before start)
+_CHIP_BASE = "QPushButton { border-radius: 10px; padding: 3px 12px; %s }"
+CHIP_UNSET_STYLE = _CHIP_BASE % "background: transparent; color: #888; border: 1px dashed #aaa;"
+CHIP_SET_STYLE = _CHIP_BASE % ("background: #d4edda; color: #155724; border: 1px solid #28a745;"
+                               " font-weight: bold;")
+CHIP_BAD_STYLE = _CHIP_BASE % ("background: #f8d7da; color: #721c24; border: 1px solid #dc3545;"
+                               " font-weight: bold;")
+STATUS_HINT_STYLE = "color: #888; padding: 3px;"
+STATUS_READY_STYLE = "color: #155724; font-weight: bold; padding: 3px;"
+STATUS_BAD_STYLE = "color: #721c24; font-weight: bold; padding: 3px;"
+STATUS_EDITING_STYLE = ("background: #fff3cd; color: #000; padding: 3px 6px;"
+                        " border-radius: 3px; font-weight: bold;")
 
 
 def _pose_stitch_filename(case_id: str, stitch_id: str) -> str:
@@ -94,6 +122,8 @@ class PreprocessingTab(QWidget):
         self._worker: FnWorker | None = None
         self._source_info_cache: dict[str, ffmpeg_utils.VideoInfo] = {}
         self._last_autofilled_case_id: Optional[str] = None
+        # case whose clip list is currently in _pending_clips / the table
+        self._draft_case_id: Optional[str] = None
         self.case_combos: dict[str, QComboBox] = {}
         self.stitch_combos: dict[str, QComboBox] = {}
         self._build_ui()
@@ -187,39 +217,69 @@ class PreprocessingTab(QWidget):
         cut_row1.addWidget(QLabel("Stitch ID:"))
         self.stitch_id_edit = QLineEdit()
         self.stitch_id_edit.setPlaceholderText("e.g. stitch_01 / knot_01")
+        self.stitch_id_edit.returnPressed.connect(self._commit_clip)
         cut_row1.addWidget(self.stitch_id_edit)
-        self.btn_set_start = QPushButton("Set start = playhead (I)")
+        self.btn_set_start = QPushButton("Set start (I)")
         self.btn_set_start.clicked.connect(self._set_start)
         cut_row1.addWidget(self.btn_set_start)
-        self.start_label = QLabel("start: --")
-        cut_row1.addWidget(self.start_label)
-        self.btn_set_end = QPushButton("Set end = playhead (O)")
+        self.start_chip = QPushButton()
+        self.start_chip.clicked.connect(lambda: self._seek_to_mark(self._pending_start_ms))
+        cut_row1.addWidget(self.start_chip)
+        self.btn_set_end = QPushButton("Set end (O)")
         self.btn_set_end.clicked.connect(self._set_end)
         cut_row1.addWidget(self.btn_set_end)
-        self.end_label = QLabel("end: --")
-        cut_row1.addWidget(self.end_label)
+        self.end_chip = QPushButton()
+        self.end_chip.clicked.connect(lambda: self._seek_to_mark(self._pending_end_ms))
+        cut_row1.addWidget(self.end_chip)
         left.addLayout(cut_row1)
 
-        btn_add_clip = QPushButton("Add to clip list (with scores below)")
-        btn_add_clip.clicked.connect(self._add_clip_row)
-        left.addWidget(btn_add_clip)
+        # always-present status line (next step / ready / editing) -- shown
+        # in place rather than as an extra row, so the layout never jumps
+        self.mark_status = QLabel("")
+        self.mark_status.setWordWrap(True)
+        left.addWidget(self.mark_status)
+
+        btn_row = QHBoxLayout()
+        self.btn_add_clip = QPushButton("\u2795 Add clip (Enter)")
+        self.btn_add_clip.clicked.connect(self._commit_clip)
+        btn_row.addWidget(self.btn_add_clip)
+        self.btn_update_clip = QPushButton("\u2714 Update")
+        self.btn_update_clip.clicked.connect(self._commit_clip)
+        btn_row.addWidget(self.btn_update_clip)
+        self.btn_cancel_edit = QPushButton("Cancel edit")
+        self.btn_cancel_edit.clicked.connect(self._cancel_edit)
+        btn_row.addWidget(self.btn_cancel_edit)
+        btn_row.addSpacing(16)
+        self.btn_edit_clip = QPushButton("\u270e Edit selected")
+        self.btn_edit_clip.clicked.connect(self._edit_selected_clip)
+        btn_row.addWidget(self.btn_edit_clip)
+        self.btn_remove_clip = QPushButton("Remove selected")
+        self.btn_remove_clip.clicked.connect(self._remove_selected_clip)
+        btn_row.addWidget(self.btn_remove_clip)
+        btn_row.addStretch(1)
+        self.btn_cut_all = QPushButton("\u2702 Cut all clips \u2192 pose/<case_id>/")
+        self.btn_cut_all.clicked.connect(self._cut_all)
+        btn_row.addWidget(self.btn_cut_all)
+        left.addLayout(btn_row)
+        QShortcut(QKeySequence("Ctrl+Return"), self, self._commit_clip)
 
         self.clip_table = QTableWidget(0, 6)
         self.clip_table.setHorizontalHeaderLabels(
             ["Stitch ID", "Type", "Start", "End", "Duration", "Scores"]
         )
         self.clip_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Cells were editable before, but edits never reached _pending_clips
+        # (what actually gets cut) -- make that explicit. Double-click seeks.
+        self.clip_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.clip_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.clip_table.setToolTip("Double-click a row to jump to its start. "
+                                   "Use \"Edit selected\" to change a clip.")
+        self.clip_table.cellDoubleClicked.connect(lambda row, _col: self._seek_to_clip_row(row))
+        self.clip_table.verticalHeader().sectionDoubleClicked.connect(self._seek_to_clip_row)
+        self.player.positionMsChanged.connect(self._sync_clip_highlight_to_playhead)
+        self._active_clip_rows: Optional[set[int]] = None  # None = restyle needed
+        self.clip_table.itemSelectionChanged.connect(self._update_buttons)
         left.addWidget(self.clip_table)
-
-        btn_row = QHBoxLayout()
-        btn_remove = QPushButton("Remove selected")
-        btn_remove.clicked.connect(self._remove_selected_clip)
-        btn_row.addWidget(btn_remove)
-        btn_cut_all = QPushButton("Cut all clips \u2192 pose/<case_id>/")
-        btn_cut_all.clicked.connect(self._cut_all)
-        btn_row.addWidget(btn_cut_all)
-        btn_row.addStretch(1)
-        left.addLayout(btn_row)
         b2.addLayout(left, stretch=3)
 
         # -- scoring panel (visible while scrubbing/cutting) --------------
@@ -247,9 +307,10 @@ class PreprocessingTab(QWidget):
         self.case_score_status.setWordWrap(True)
         score_l.addWidget(self.case_score_status)
 
-        score_l.addWidget(self._section_label("Per-stitch (applies to the NEXT clip you add)"))
+        self.stitch_section_label = self._section_label("")
+        score_l.addWidget(self.stitch_section_label)
         self.stitch_score_note = QLabel(
-            "Captured when \"Add to clip list\" is clicked and only saved "
+            "Captured when the clip is added/updated and only saved "
             "for Clip type = stitch."
         )
         self.stitch_score_note.setWordWrap(True)
@@ -269,7 +330,14 @@ class PreprocessingTab(QWidget):
 
         self._pending_start_ms: float | None = None
         self._pending_end_ms: float | None = None
+        # Edit mode: the clip dict being edited (by identity, so it survives
+        # re-sorting) and the half-entered NEW clip it displaced, restored
+        # when the edit is finished or cancelled.
+        self._editing_clip: Optional[dict] = None
+        self._stashed_new_form: Optional[dict] = None
         self._on_clip_type_changed(self.clip_type_combo.currentText())
+        self._set_pending_range(None, None)
+        self._update_edit_mode_ui()
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
@@ -309,6 +377,9 @@ class PreprocessingTab(QWidget):
             self.case_combos[scale_name] = combo
             self.case_form.addRow(f"{d.display_label or scale_name}:", combo)
 
+        # keep whatever per-stitch scores were picked (e.g. mid-edit) for
+        # scales that also exist in the new rubric
+        previous_scores = self._form_scores()
         _clear_layout(self.stitch_form)
         self.stitch_combos = {}
         for scale_name in stitch_keys:
@@ -316,6 +387,7 @@ class PreprocessingTab(QWidget):
             combo = _make_scale_combo(d)
             self.stitch_combos[scale_name] = combo
             self.stitch_form.addRow(f"{d.display_label or scale_name}:", combo)
+        self._set_form_scores(previous_scores)
 
         # re-apply the stitch-combo enabled/disabled state for the current clip type
         self._on_clip_type_changed(self.clip_type_combo.currentText())
@@ -346,6 +418,7 @@ class PreprocessingTab(QWidget):
     def _on_case_id_edited(self) -> None:
         case_id = self.case_id_edit.text().strip()
         self._apply_known_case_type_for(case_id)
+        self._switch_draft_case(case_id)
 
     def _on_clip_type_changed(self, clip_type: str) -> None:
         enabled = clip_type == "stitch"
@@ -424,6 +497,7 @@ class PreprocessingTab(QWidget):
             self.case_id_edit.setText(path.stem)
             self._last_autofilled_case_id = path.stem
         self._apply_known_case_type_for(self.case_id_edit.text().strip())
+        self._switch_draft_case(self.case_id_edit.text().strip())
 
         # also load it into the player for cutting (uses the *original*
         # if not yet standardized -- see _standardize's on-finish reload)
@@ -460,18 +534,195 @@ class PreprocessingTab(QWidget):
 
     # -- clip cutting -------------------------------------------------------
     def _set_start(self) -> None:
-        self._pending_start_ms = self.player.current_ms()
-        self.start_label.setText(f"start: {ms_to_timecode(self._pending_start_ms)}")
+        self._set_pending_range(self.player.current_ms(), self._pending_end_ms)
 
     def _set_end(self) -> None:
-        self._pending_end_ms = self.player.current_ms()
-        self.end_label.setText(f"end: {ms_to_timecode(self._pending_end_ms)}")
+        self._set_pending_range(self._pending_start_ms, self.player.current_ms())
 
-    def _add_clip_row(self) -> None:
-        stitch_id = self.stitch_id_edit.text().strip()
-        if not stitch_id:
-            QMessageBox.warning(self, "Missing stitch ID", "Enter a stitch ID (e.g. stitch_01).")
+    def _set_pending_range(self, start_ms: Optional[float], end_ms: Optional[float]) -> None:
+        self._pending_start_ms = start_ms
+        self._pending_end_ms = end_ms
+        bad = start_ms is not None and end_ms is not None and end_ms <= start_ms
+        for chip, label, ms in ((self.start_chip, "Start", start_ms),
+                                (self.end_chip, "End", end_ms)):
+            if ms is None:
+                chip.setText(f"{label}: not set")
+                chip.setStyleSheet(CHIP_UNSET_STYLE)
+                chip.setToolTip("")
+            else:
+                mark = "\u2717" if bad else "\u2713"
+                chip.setText(f"{label} {mark} {ms_to_timecode(ms)}")
+                chip.setStyleSheet(CHIP_BAD_STYLE if bad else CHIP_SET_STYLE)
+                chip.setToolTip("Click to jump here")
+        self._update_mark_status()
+        self._update_timeline()
+        self._update_buttons()
+
+    def _seek_to_mark(self, ms: Optional[float]) -> None:
+        if ms is not None:
+            self.player.seek_ms(ms)
+
+    def _update_mark_status(self) -> None:
+        """One line telling the user what's set and what to do next."""
+        a, b = self._pending_start_ms, self._pending_end_ms
+        if a is None and b is None:
+            text, style = "\u2460 Scrub to where the clip starts and press I (Set start).", STATUS_HINT_STYLE
+        elif a is None:
+            text, style = "\u2460 Now mark the start: press I (Set start).", STATUS_HINT_STYLE
+        elif b is None:
+            text, style = "\u2461 Now scrub to the end of the clip and press O (Set end).", STATUS_HINT_STYLE
+        elif b <= a:
+            text, style = ("\u2717 End is before start -- move the playhead and set start or "
+                           "end again."), STATUS_BAD_STYLE
+        else:
+            text = (f"\u2714 {(b - a) / 1000.0:.2f} s clip marked -- enter the stitch ID and "
+                    f"scores, then press Enter (or Add clip).")
+            style = STATUS_READY_STYLE
+        if self._editing_clip is not None:
+            sid = self._editing_clip["stitch_id"]
+            dur = f" ({(b - a) / 1000.0:.2f} s)" if a is not None and b is not None and b > a else ""
+            text = (f"\u270e Editing '{sid}'{dur}: changes apply to this clip only -- "
+                    f"Update to save or Cancel edit to discard. "
+                    f"The new clip you were entering comes back afterwards.")
+            if b is not None and a is not None and b <= a:
+                text += "  \u2717 End is before start."
+            style = STATUS_EDITING_STYLE
+        self.mark_status.setText(text)
+        self.mark_status.setStyleSheet(style)
+
+    def _update_buttons(self) -> None:
+        editing = self._editing_clip is not None
+        a, b = self._pending_start_ms, self._pending_end_ms
+        range_ok = a is not None and b is not None and b > a
+        n_selected = len(self._selected_clip_rows())
+        self.btn_add_clip.setEnabled(not editing and range_ok)
+        self.btn_add_clip.setToolTip(
+            "Finish or cancel the current edit first." if editing else
+            "" if range_ok else "Set a start (I) and an end (O) first.")
+        self.btn_update_clip.setEnabled(editing and range_ok)
+        self.btn_cancel_edit.setEnabled(editing)
+        self.btn_edit_clip.setEnabled(n_selected == 1)
+        self.btn_remove_clip.setEnabled(n_selected > 0)
+        self.btn_cut_all.setEnabled(bool(self._pending_clips) and not editing)
+        self.btn_cut_all.setToolTip("Finish or cancel the current edit first." if editing else "")
+
+    # -- clip form state (shared by "add new" and "edit existing") ----------
+    def _form_scores(self) -> dict[str, int]:
+        scores = {}
+        for name, combo in self.stitch_combos.items():
+            value = _combo_value(combo)
+            if value is not None:
+                scores[name] = value
+        return scores
+
+    def _set_form_scores(self, scores: dict[str, int]) -> None:
+        for name, combo in self.stitch_combos.items():
+            idx = combo.findData(scores.get(name)) if name in scores else 0
+            combo.setCurrentIndex(max(idx, 0))
+
+    def _form_state(self) -> dict:
+        return {
+            "stitch_id": self.stitch_id_edit.text(),
+            "clip_type": self.clip_type_combo.currentText(),
+            "start_ms": self._pending_start_ms,
+            "end_ms": self._pending_end_ms,
+            "scores": self._form_scores(),
+        }
+
+    def _apply_form_state(self, state: dict) -> None:
+        self.clip_type_combo.setCurrentText(state["clip_type"])
+        self.stitch_id_edit.setText(state["stitch_id"])
+        self._set_form_scores(state["scores"])
+        self._set_pending_range(state["start_ms"], state["end_ms"])
+
+    def _blank_form_state(self) -> dict:
+        clip_type = self.clip_type_combo.currentText()
+        return {"stitch_id": CLIP_TYPE_PREFIXES.get(clip_type, ""), "clip_type": clip_type,
+                "start_ms": None, "end_ms": None, "scores": {}}
+
+    # -- edit mode ----------------------------------------------------------
+    def _selected_clip_rows(self) -> list[int]:
+        return sorted({idx.row() for idx in self.clip_table.selectedIndexes()})
+
+    def _edit_selected_clip(self) -> None:
+        rows = self._selected_clip_rows()
+        if len(rows) != 1:
+            QMessageBox.information(self, "Select one clip", "Select a single clip row to edit.")
             return
+        clip = self._pending_clips[rows[0]]
+        if self._editing_clip is None:
+            self._stashed_new_form = self._form_state()
+        # switching straight to another clip drops unsaved changes to the
+        # previous one -- the stashed new clip is kept either way
+        self._editing_clip = clip
+        self._apply_form_state(clip)
+        self.player.seek_ms(clip["start_ms"])
+        self._update_edit_mode_ui()
+
+    def _cancel_edit(self) -> None:
+        if self._editing_clip is None:
+            return
+        self._editing_clip = None
+        self._apply_form_state(self._stashed_new_form or self._blank_form_state())
+        self._stashed_new_form = None
+        self._update_edit_mode_ui()
+
+    def _update_edit_mode_ui(self) -> None:
+        editing = self._editing_clip
+        if editing is None:
+            self.btn_update_clip.setText("\u2714 Update")
+            self.stitch_section_label.setText("Per-stitch (applies to the NEXT clip you add)")
+        else:
+            sid = editing["stitch_id"]
+            self.btn_update_clip.setText(f"\u2714 Update '{sid}' (Enter)")
+            self.stitch_section_label.setText(f"Per-stitch (EDITING '{sid}')")
+        self._update_mark_status()
+        self._update_timeline()
+        self._update_buttons()
+
+    def _update_timeline(self) -> None:
+        ranges = []
+        for clip in self._pending_clips:
+            color = TIMELINE_EDITING if clip is self._editing_clip else CLIP_HIGHLIGHT
+            ranges.append((clip["start_ms"], clip["end_ms"], color))
+        a, b = self._pending_start_ms, self._pending_end_ms
+        if a is not None and b is not None:
+            ranges.append((min(a, b), max(a, b), TIMELINE_PENDING))
+        elif a is not None or b is not None:
+            mark = a if a is not None else b
+            ranges.append((mark, mark, TIMELINE_PENDING))
+        self.player.set_timeline_ranges(ranges)
+
+    def _commit_clip(self) -> None:
+        """Add a new clip, or -- in edit mode -- update the one being edited."""
+        case_id = self.case_id_edit.text().strip()
+        if not case_id:
+            QMessageBox.warning(self, "Missing case ID", "Enter a case ID first.")
+            return
+        self._switch_draft_case(case_id)
+        editing = self._editing_clip
+        others = [c for c in self._pending_clips if c is not editing]
+        stitch_id = self.stitch_id_edit.text().strip()
+        # the case ID is prepended when the clip is saved -- don't double it
+        if stitch_id.startswith(f"{case_id}_"):
+            stitch_id = stitch_id[len(case_id) + 1:]
+        if not stitch_id or stitch_id in CLIP_TYPE_PREFIXES.values():
+            QMessageBox.warning(self, "Missing stitch ID",
+                                "Enter a full stitch ID (e.g. stitch_01), not just the prefix.")
+            return
+        if any(c["stitch_id"] == stitch_id for c in others):
+            QMessageBox.warning(self, "Duplicate stitch ID",
+                                f"'{stitch_id}' is already in the clip list.")
+            return
+        existing = self.pm.paths.pose / case_id / _pose_stitch_filename(case_id, stitch_id)
+        id_unchanged = editing is not None and editing["stitch_id"] == stitch_id
+        if existing.exists() and not id_unchanged:
+            answer = QMessageBox.question(
+                self, "Clip already exists",
+                f"{existing.name} was already cut. Cutting again will overwrite it. Continue?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         if self._pending_start_ms is None or self._pending_end_ms is None:
             QMessageBox.warning(self, "Missing in/out points", "Set both start and end first.")
             return
@@ -480,47 +731,166 @@ class PreprocessingTab(QWidget):
             return
 
         clip_type = self.clip_type_combo.currentText()
-        case_type = self._current_case_type()
-        scores: dict[str, int] = {}
-        if clip_type == "stitch":
-            for name, combo in self.stitch_combos.items():
-                value = _combo_value(combo)
-                if value is not None:
-                    scores[name] = value
+        start_ms, end_ms = self._pending_start_ms, self._pending_end_ms
+        overlapping = [c for c in others if c["clip_type"] == clip_type
+                       and c["start_ms"] < end_ms and start_ms < c["end_ms"]]
+        if overlapping:
+            names = ", ".join(
+                f"{c['stitch_id']} ({ms_to_timecode(c['start_ms'])}\u2013{ms_to_timecode(c['end_ms'])})"
+                for c in overlapping)
+            answer = QMessageBox.question(
+                self, "Overlapping clip",
+                f"This {clip_type} clip overlaps {names}. Keep it anyway?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
 
-        row = self.clip_table.rowCount()
-        self.clip_table.insertRow(row)
-        self.clip_table.setItem(row, 0, QTableWidgetItem(stitch_id))
-        self.clip_table.setItem(row, 1, QTableWidgetItem(clip_type))
-        self.clip_table.setItem(row, 2, QTableWidgetItem(ms_to_timecode(self._pending_start_ms)))
-        self.clip_table.setItem(row, 3, QTableWidgetItem(ms_to_timecode(self._pending_end_ms)))
-        dur = (self._pending_end_ms - self._pending_start_ms) / 1000.0
-        self.clip_table.setItem(row, 4, QTableWidgetItem(f"{dur:.2f}s"))
-        scores_summary = ", ".join(f"{k}={v}" for k, v in scores.items())
-        self.clip_table.setItem(row, 5, QTableWidgetItem(scores_summary))
-
-        self._pending_clips.append({
+        clip = {
             "stitch_id": stitch_id,
             "clip_type": clip_type,
-            "case_type": case_type,
-            "start_ms": self._pending_start_ms,
-            "end_ms": self._pending_end_ms,
-            "scores": scores,
-        })
-        self.stitch_id_edit.clear()
-        self._maybe_prefill_stitch_id(self.clip_type_combo.currentText())
-        for combo in self.stitch_combos.values():
-            combo.setCurrentIndex(0)
-        self._pending_start_ms = None
-        self._pending_end_ms = None
-        self.start_label.setText("start: --")
-        self.end_label.setText("end: --")
+            "case_type": self._current_case_type(),
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "scores": self._form_scores() if clip_type == "stitch" else {},
+        }
+        if editing is not None:
+            editing.update(clip)  # in place: keeps identity for a running cut
+            self._log(f"Updated '{stitch_id}'.")
+            self._editing_clip = None
+            next_form = self._stashed_new_form or self._blank_form_state()
+            self._stashed_new_form = None
+        else:
+            self._pending_clips.append(clip)
+            next_form = self._blank_form_state()
+        self._pending_clips.sort(key=lambda c: c["start_ms"])
+        self._set_pending_clips(self._pending_clips)
+        self._save_draft()
+        self._apply_form_state(next_form)
+        self._update_edit_mode_ui()
+
+    def _append_table_row(self, clip: dict) -> None:
+        row = self.clip_table.rowCount()
+        self.clip_table.insertRow(row)
+        self.clip_table.setItem(row, 0, QTableWidgetItem(clip["stitch_id"]))
+        self.clip_table.setItem(row, 1, QTableWidgetItem(clip["clip_type"]))
+        self.clip_table.setItem(row, 2, QTableWidgetItem(ms_to_timecode(clip["start_ms"])))
+        self.clip_table.setItem(row, 3, QTableWidgetItem(ms_to_timecode(clip["end_ms"])))
+        dur = (clip["end_ms"] - clip["start_ms"]) / 1000.0
+        self.clip_table.setItem(row, 4, QTableWidgetItem(f"{dur:.2f}s"))
+        scores_summary = ", ".join(f"{k}={v}" for k, v in clip["scores"].items())
+        self.clip_table.setItem(row, 5, QTableWidgetItem(scores_summary))
+
+    def _set_pending_clips(self, clips: list[dict]) -> None:
+        self._pending_clips = list(clips)
+        self.clip_table.setRowCount(0)
+        for clip in self._pending_clips:
+            self._append_table_row(clip)
+        self._refresh_clip_highlight()
+        self._update_timeline()
+        self._update_buttons()
+
+    def _seek_to_clip_row(self, row: int) -> None:
+        if 0 <= row < len(self._pending_clips):
+            self.player.seek_ms(self._pending_clips[row]["start_ms"])
+
+    def _refresh_clip_highlight(self) -> None:
+        self._active_clip_rows = None  # force a restyle
+        self._sync_clip_highlight_to_playhead(self.player.current_ms())
+
+    def _sync_clip_highlight_to_playhead(self, ms: float) -> None:
+        """Highlight every clip whose [start, end) contains the playhead
+        (clips may overlap or be out of order, so this is a range check
+        rather than the Semantic tab's "last event before playhead")."""
+        active = {r for r, c in enumerate(self._pending_clips)
+                  if c["start_ms"] <= ms < c["end_ms"]}
+        if active == self._active_clip_rows:
+            return  # unchanged -- skip restyling on every frame
+        newly_active = active - (self._active_clip_rows or set())
+        self._active_clip_rows = active
+        active_background = CLIP_HIGHLIGHT
+        for row in range(self.clip_table.rowCount()):
+            for column in range(self.clip_table.columnCount()):
+                item = self.clip_table.item(row, column)
+                if item is None:
+                    continue
+                font = item.font()
+                font.setBold(row in active)
+                item.setFont(font)
+                item.setBackground(active_background if row in active else QBrush())
+                # keep text dark on the yellow highlight in dark themes too
+                item.setForeground(QColor("#000") if row in active else QBrush())
+        if newly_active:
+            item = self.clip_table.item(min(newly_active), 0)
+            if item is not None:
+                self.clip_table.scrollToItem(item)
 
     def _remove_selected_clip(self) -> None:
-        rows = sorted({idx.row() for idx in self.clip_table.selectedIndexes()}, reverse=True)
-        for r in rows:
+        rows = self._selected_clip_rows()
+        if any(self._pending_clips[r] is self._editing_clip for r in rows):
+            self._cancel_edit()
+        for r in reversed(rows):
             self.clip_table.removeRow(r)
             del self._pending_clips[r]
+        if rows:
+            self._save_draft()
+            self._refresh_clip_highlight()
+            self._update_timeline()
+            self._update_buttons()
+
+    # -- clip-list draft (survives crashes / failed cuts / restarts) ---------
+    def _draft_path(self, case_id: str) -> Path:
+        return self.pm.paths.pose / case_id / CLIP_LIST_DRAFT_FILENAME
+
+    def _save_draft(self) -> None:
+        case_id = self._draft_case_id
+        if not case_id:
+            return
+        path = self._draft_path(case_id)
+        try:
+            if not self._pending_clips:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "case_id": case_id,
+                "rater": self.rater_edit.text().strip(),
+                "clips": self._pending_clips,
+            }
+            # write-then-rename so a crash mid-write never corrupts the draft
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as e:
+            self._log(f"Warning: could not save clip list draft ({e})")
+
+    def _load_draft(self, case_id: str) -> tuple[list[dict], str]:
+        path = self._draft_path(case_id)
+        if not path.exists():
+            return [], ""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return list(data.get("clips", [])), data.get("rater", "")
+        except (OSError, ValueError) as e:
+            self._log(f"Warning: could not read clip list draft {path} ({e})")
+            return [], ""
+
+    def _switch_draft_case(self, case_id: str) -> None:
+        """Show the saved clip list for `case_id` (empty if none). The
+        previous case's list stays saved under its own ID."""
+        case_id = case_id or None
+        if case_id == self._draft_case_id:
+            return
+        self._cancel_edit()
+        if self._draft_case_id and self._pending_clips:
+            self._log(f"Clip list for {self._draft_case_id} kept "
+                      f"({len(self._pending_clips)} clip(s)); select that case to continue it.")
+        self._draft_case_id = case_id
+        clips, rater = self._load_draft(case_id) if case_id else ([], "")
+        self._set_pending_clips(clips)
+        if clips:
+            if rater and not self.rater_edit.text().strip():
+                self.rater_edit.setText(rater)
+            self._log(f"Restored {len(clips)} unsaved clip(s) for {case_id}.")
 
     def _cut_all(self) -> None:
         case_id = self.case_id_edit.text().strip()
@@ -530,6 +900,20 @@ class PreprocessingTab(QWidget):
         if not self._pending_clips:
             QMessageBox.information(self, "Nothing to cut", "Add at least one clip to the list.")
             return
+        if self._editing_clip is not None:
+            QMessageBox.warning(self, "Edit in progress",
+                                f"Update or cancel the edit of '{self._editing_clip['stitch_id']}' "
+                                f"before cutting.")
+            return
+        unscored = [c["stitch_id"] for c in self._pending_clips
+                    if c["clip_type"] == "stitch" and not c["scores"]]
+        if unscored and self.stitch_combos:
+            answer = QMessageBox.question(
+                self, "Unscored stitches",
+                f"No scores entered for: {', '.join(unscored)}. Cut anyway?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         name = self.source_list.currentItem().text() if self.source_list.currentItem() else None
         if not name:
             QMessageBox.warning(self, "No source video", "Select the source video in the list.")
@@ -580,7 +964,8 @@ class PreprocessingTab(QWidget):
         self._worker.finished_ok.connect(
             lambda results: self._on_cut_done(case_id, source_video_path, source_info, results)
         )
-        self._worker.failed.connect(lambda msg: self._log(f"FAILED: {msg}"))
+        self._worker.failed.connect(lambda msg: self._log(
+            f"FAILED: {msg}\nThe clip list is still saved -- fix the problem and cut again."))
         self._worker.start()
 
     def _on_cut_done(self, case_id: str, source_video_path: Path,
@@ -612,8 +997,12 @@ class PreprocessingTab(QWidget):
         self._log(f"Done. {len(results)} clip(s) written to pose/{case_id}/ and registered "
                   f"(scores saved to clinical/score_entries_{self._current_case_type()}.csv "
                   f"for stitch clips).")
-        self.clip_table.setRowCount(0)
-        self._pending_clips.clear()
+        # Drop only the clips that were cut -- any added while the cut was
+        # running stay in the list and in the draft.
+        if case_id == self._draft_case_id:
+            cut = {id(clip) for clip, _, _ in results}
+            self._set_pending_clips([c for c in self._pending_clips if id(c) not in cut])
+            self._save_draft()
 
     # -- score writing (generic: one row per subitem, any case type) -------------
     def _append_score_values(self, case_id: str, case_type: str, rater: str,

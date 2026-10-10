@@ -20,11 +20,14 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF
+from PySide6.QtGui import (
+    QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut, QColor, QPainter,
+)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
     QSpinBox, QSizePolicy, QDoubleSpinBox, QScrollArea, QLineEdit,
+    QStyle, QStyleOptionSlider,
 )
 
 MIN_ZOOM = 0.25
@@ -69,6 +72,49 @@ def timecode_to_ms(text: str) -> Optional[float]:
     return seconds * 1000.0
 
 
+class _MarkedSlider(QSlider):
+    """QSlider that also paints translucent colored ranges (in slider/frame
+    units) over its groove -- used to show cut clips on the timeline."""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._ranges: list[tuple[int, int, QColor]] = []
+
+    def set_ranges(self, ranges: list[tuple[int, int, QColor]]) -> None:
+        self._ranges = ranges
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().paintEvent(event)
+        if not self._ranges or self.maximum() <= self.minimum():
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                      QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                      QStyle.SubControl.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        x0 = groove.x() + handle.width() / 2
+
+        def x_of(value: int) -> float:
+            value = min(max(value, self.minimum()), self.maximum())
+            return x0 + QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), value, span)
+
+        painter = QPainter(self)
+        y = groove.center().y() - 4
+        for start, end, color in self._ranges:
+            xa = x_of(start)
+            xb = max(x_of(end), xa + 2)  # zero-length ranges still show as a tick
+            rect = QRectF(xa, y, xb - xa, 8)
+            painter.fillRect(rect, color)
+            # outline so pale colors still read on a light groove
+            painter.setPen(color.darker(150))
+            painter.drawRect(rect)
+        painter.end()
+
+
 class VideoPlayerWidget(QWidget):
     frameChanged = Signal(int)         # current frame index
     positionMsChanged = Signal(float)  # current position in ms
@@ -88,6 +134,7 @@ class VideoPlayerWidget(QWidget):
         self._zoom: float = 1.0
         self._min_height = min_height
         self._show_zoom_controls = show_zoom_controls
+        self._timeline_ranges_ms: list[tuple[float, float, QColor]] = []
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -134,7 +181,7 @@ class VideoPlayerWidget(QWidget):
         self.scroll.viewport().installEventFilter(self)
         layout.addWidget(self.scroll, stretch=1)
 
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = _MarkedSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.seek_frame)
         layout.addWidget(self.slider)
@@ -220,8 +267,19 @@ class VideoPlayerWidget(QWidget):
         self._nframes = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.slider.setRange(0, max(0, self._nframes - 1))
         self.frame_spin.setRange(0, max(0, self._nframes - 1))
+        self._apply_timeline_ranges()  # fps may differ from the previous video
         self.seek_frame(0)
         return True
+
+    def set_timeline_ranges(self, ranges_ms: list[tuple[float, float, QColor]]) -> None:
+        """Colored (start_ms, end_ms, color) bands drawn on the seek slider."""
+        self._timeline_ranges_ms = list(ranges_ms)
+        self._apply_timeline_ranges()
+
+    def _apply_timeline_ranges(self) -> None:
+        to_frame = lambda ms: int(round(ms * self._fps / 1000.0))  # noqa: E731
+        self.slider.set_ranges([(to_frame(a), to_frame(b), c)
+                                for a, b, c in self._timeline_ranges_ms])
 
     @property
     def fps(self) -> float:
