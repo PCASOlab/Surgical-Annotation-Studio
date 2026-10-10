@@ -5,9 +5,9 @@ Frame-by-frame keypoint labeling for DeepLabCut training data. Click to
 place the 5 needle points (tip, b1, b2, b3, swage) in order, optionally
 also 2 tool-tip points if "Track tools too" is enabled in the project
 config. Saving a frame:
-  1. writes the frame as a PNG under labeled-data/<video_folder>/imgNNN.png
-     (standard DLC layout, video_folder name encodes case/stitch/time range
-     the same way the existing CollectedData_master.csv rows do), and
+  1. writes the frame as a PNG under
+     labeled-data/<case_id>_<stitch_id>/<case_id>_<stitch_id>_imgNNN.png
+     (standard DLC layout), and
   2. upserts that frame's coordinates into
      labeled-data/CollectedData_<scorer>.csv in DLC's native 3-row-header
      multi-scorer format.
@@ -18,6 +18,7 @@ into master-shivank-2025-12-28 if the lab points DLC at this project's
 config.yaml (bodyparts list is generated to match).
 """
 from __future__ import annotations
+import re
 import cv2
 from pathlib import Path
 
@@ -34,13 +35,6 @@ from core.project import ProjectManager
 from io_utils import dlc_io
 from widgets.video_widget import VideoPlayerWidget, ms_to_timecode
 from widgets.keypoint_canvas import KeypointCanvas
-
-
-def _tc_compact(sec: float) -> str:
-    total = int(round(sec))
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}-{m:02d}-{s:02d}"
 
 
 class KeypointTab(QWidget):
@@ -204,18 +198,19 @@ class KeypointTab(QWidget):
 
     # -- naming helpers -----------------------------------------------------
     def _video_folder_name(self) -> str:
+        """<case_id>_<stitch_id>. Clips cut by the Preprocessing tab are
+        already named that way; older clips named just <stitch_id> get the
+        case ID prefixed."""
         assert self._current_case and self.stitch_combo.currentText()
-        stitch_id = self.stitch_combo.currentText()
-        meta = self.pm.get_stitch_meta(self._current_case, stitch_id)
-        if meta is None:
-            return f"{self._current_case}_{stitch_id}"
-        return (f"{self._current_case}_{stitch_id}_"
-                f"{_tc_compact(meta.start_sec_in_source)}_to_{_tc_compact(meta.end_sec_in_source)}")
+        clip_name = self.stitch_combo.currentText()
+        if clip_name.startswith(f"{self._current_case}_"):
+            return clip_name
+        return f"{self._current_case}_{clip_name}"
 
     def _image_name(self, frame_idx: int) -> str:
         nframes = max(self.player.nframes, 1)
         width = max(3, len(str(nframes - 1)))
-        return f"img{frame_idx:0{width}d}.png"
+        return f"{self._video_folder_name()}_img{frame_idx:0{width}d}.png"
 
     def _csv_path(self) -> Path:
         scorer = self.scorer_edit.text().strip() or DEFAULT_SCORER
@@ -320,7 +315,8 @@ class KeypointTab(QWidget):
 
     def _jump_to_labeled_frame(self, item: QListWidgetItem) -> None:
         image_name = item.data(Qt.ItemDataRole.UserRole)
-        # image name format img<digits>.png -> frame index
-        digits = "".join(ch for ch in image_name if ch.isdigit())
-        if digits:
-            self.player.seek_frame(int(digits))
+        # image name format <case>_<stitch>_img<digits>.png -> frame index
+        # (case/stitch IDs contain digits too, so only take the trailing ones)
+        m = re.search(r"img(\d+)\.png$", image_name)
+        if m:
+            self.player.seek_frame(int(m.group(1)))

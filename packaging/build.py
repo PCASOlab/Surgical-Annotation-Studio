@@ -5,8 +5,8 @@ packaging/build.py
 Builds a standalone desktop app (.app on macOS, .exe on Windows, plain
 executable on Linux) using PyInstaller. Run from the repo root:
 
-    python3 -m pip install -r requirements.txt -r requirements-build.txt
-    python3 packaging/build.py
+    python -m pip install -r requirements.txt -r requirements-build.txt
+    python packaging/build.py
 
 Output lands in dist/Surgical Annotation Studio/ (onedir build -- faster
 startup than a single-file .exe, and easier to inspect/debug).

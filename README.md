@@ -21,12 +21,37 @@ ffmpeg installed.
 
 ## Install
 
+Create a virtual environment so the dependencies are installed into the
+same Python that runs the app. The command that starts Python differs by OS.
+
+**Linux / macOS:**
+
 ```bash
 cd Downloads/Surgical-Annotation-Studio/       # or however it is named/extracted from zip
 python3 -m venv .venv
-source .venv/bin/activate       # .venv\Scripts\activate on Windows
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+cd Downloads\Surgical-Annotation-Studio\       # or however it is named/extracted from zip
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Use `py`, the Python launcher that the python.org installer adds, to
+create the venv. On Windows, `python` and `python3` can point to
+different installs, such as a python.org install and the Microsoft Store
+one. If PowerShell refuses to run `Activate.ps1` ("running scripts is
+disabled"), run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
+In cmd.exe, use `.venv\Scripts\activate.bat` instead.
+
+Once the venv is active, `python` refers to the venv's interpreter on
+every OS. Use `python` for all the commands below.
 
 Then install ffmpeg for your OS:
 
@@ -41,15 +66,17 @@ the right command for whatever OS you're actually running on.
 
 ## Run
 
+With the venv activated:
+
 ```bash
-python3 main.py
+python main.py
 ```
 
 This opens a dialog to **create a new project** (pick an empty folder) or
 **open an existing one**. To skip the dialog:
 
 ```bash
-python3 main.py /path/to/project
+python main.py /path/to/project
 ```
 
 The app opens maximized. Press **F11** for fullscreen, **Ctrl+M** to
