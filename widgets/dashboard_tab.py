@@ -29,7 +29,7 @@ class DashboardTab(QWidget):
 
         top = QHBoxLayout()
         self.project_label = QLabel()
-        self.project_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.project_label.setStyleSheet("font-weight: bold; font-size: 15px; padding: 4px 0;")
         top.addWidget(self.project_label)
         top.addStretch(1)
         btn_refresh = QPushButton("Rescan project")
@@ -62,6 +62,7 @@ class DashboardTab(QWidget):
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self.table.setItem(r, 0, QTableWidgetItem(row["case_id"]))
-            self.table.setItem(r, 1, QTableWidgetItem(str(row["n_stitches"])))
-            self.table.setItem(r, 2, QTableWidgetItem(str(row["n_dlc_csv"])))
-            self.table.setItem(r, 3, QTableWidgetItem(str(row["n_semantic_xlsx"])))
+            for c, key in enumerate(("n_stitches", "n_dlc_csv", "n_semantic_xlsx"), start=1):
+                item = QTableWidgetItem(str(row[key]))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(r, c, item)

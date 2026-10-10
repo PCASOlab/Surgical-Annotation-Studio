@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QTextEdit, QGroupBox, QAbstractItemView,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
+from widgets.style import mark_primary
 
 from core.config import EVENT_TYPES, EVENT_HOTKEYS
 from core.project import ProjectManager
@@ -119,7 +120,7 @@ class SemanticTab(QWidget):
         self.comments_edit.setMaximumHeight(80)
         side.addWidget(self.comments_edit)
 
-        btn_save = QPushButton("\U0001f4be Save to XLSX")
+        btn_save = mark_primary(QPushButton("\U0001f4be Save to XLSX"))
         btn_save.clicked.connect(self._save)
         side.addWidget(btn_save)
         self.status_label = QLabel("")

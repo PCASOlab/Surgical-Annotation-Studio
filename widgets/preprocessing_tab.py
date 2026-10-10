@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QLayout, QScrollArea, QAbstractItemView,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
+from widgets.style import mark_primary
 
 from core import config
 from core.config import (
@@ -191,7 +192,8 @@ class PreprocessingTab(QWidget):
         self.probe_label.setStyleSheet("color: #888;")
         col.addWidget(self.probe_label)
 
-        btn_standardize = QPushButton("Standardize \u2192 pose/<case_id>/_full_standardized.mp4")
+        btn_standardize = mark_primary(
+            QPushButton("Standardize \u2192 pose/<case_id>/_full_standardized.mp4"))
         btn_standardize.clicked.connect(self._standardize)
         col.addWidget(btn_standardize)
         b1.addLayout(col, stretch=1)
@@ -240,10 +242,10 @@ class PreprocessingTab(QWidget):
         left.addWidget(self.mark_status)
 
         btn_row = QHBoxLayout()
-        self.btn_add_clip = QPushButton("\u2795 Add clip (Enter)")
+        self.btn_add_clip = mark_primary(QPushButton("\u2795 Add clip (Enter)"))
         self.btn_add_clip.clicked.connect(self._commit_clip)
         btn_row.addWidget(self.btn_add_clip)
-        self.btn_update_clip = QPushButton("\u2714 Update")
+        self.btn_update_clip = mark_primary(QPushButton("\u2714 Update"))
         self.btn_update_clip.clicked.connect(self._commit_clip)
         btn_row.addWidget(self.btn_update_clip)
         self.btn_cancel_edit = QPushButton("Cancel edit")
@@ -299,7 +301,7 @@ class PreprocessingTab(QWidget):
         score_l.addWidget(self._section_label("Case-level"))
         self.case_form = QFormLayout()
         score_l.addLayout(self.case_form)
-        btn_save_case = QPushButton("Save case-level scores")
+        btn_save_case = mark_primary(QPushButton("Save case-level scores"))
         btn_save_case.clicked.connect(self._save_case_scores)
         score_l.addWidget(btn_save_case)
         self.case_score_status = QLabel("")
