@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QFileDialog, QMessageBox, QInputDialog,
-    QScrollArea, QWidget,
+    QScrollArea, QWidget, QTableView,
 )
 
 from core.project import ProjectManager, ProjectConfig
@@ -74,6 +74,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(_wrap_scrollable(self.clinical_tab), "4. Clinical")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
+        # zebra-striped rows make wide tables easier to follow
+        for table in self.findChildren(QTableView):
+            table.setAlternatingRowColors(True)
 
         self._build_view_menu()
         self._was_maximized_before_fullscreen = True

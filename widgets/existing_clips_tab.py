@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QPushButton, QFormLayout, QScrollArea,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
+from widgets.style import mark_primary
 
 from core import config
 from core.config import CASE_TYPES, CASE_TYPE_LABELS, DEFAULT_CASE_TYPE
@@ -99,7 +100,7 @@ class ExistingClipsTab(QWidget):
         btn_load_case = QPushButton("Load existing case-level scores")
         btn_load_case.clicked.connect(self._load_case_scores)
         case_btn_row.addWidget(btn_load_case)
-        btn_save_case = QPushButton("Save case-level scores")
+        btn_save_case = mark_primary(QPushButton("Save case-level scores"))
         btn_save_case.clicked.connect(self._save_case_scores)
         case_btn_row.addWidget(btn_save_case)
         case_l.addLayout(case_btn_row)
@@ -117,7 +118,7 @@ class ExistingClipsTab(QWidget):
         btn_load_stitch = QPushButton("Load existing scores for this clip")
         btn_load_stitch.clicked.connect(self._load_stitch_scores)
         stitch_btn_row.addWidget(btn_load_stitch)
-        btn_save_stitch = QPushButton("Save scores for this clip")
+        btn_save_stitch = mark_primary(QPushButton("Save scores for this clip"))
         btn_save_stitch.clicked.connect(self._save_stitch_scores)
         stitch_btn_row.addWidget(btn_save_stitch)
         stitch_l.addLayout(stitch_btn_row)
