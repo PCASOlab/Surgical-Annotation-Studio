@@ -21,34 +21,59 @@ ffmpeg installed.
 
 ## Install
 
-Create a virtual environment so the dependencies are installed into the
-same Python that runs the app. The command that starts Python differs by OS.
+The app runs from a virtual environment (venv), so its packages are
+installed into the same Python that runs it. `setup_venv.py` creates the
+venv for you and picks the right Python:
 
-**Linux / macOS:**
-
-```bash
-cd Downloads/Surgical-Annotation-Studio/       # or however it is named/extracted from zip
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-**Windows (PowerShell):**
+**Windows (PowerShell or cmd):**
 
 ```powershell
 cd Downloads\Surgical-Annotation-Studio\       # or however it is named/extracted from zip
-py -m venv .venv
-.venv\Scripts\Activate.ps1
+py setup_venv.py
+```
+
+**macOS / Linux:**
+
+```bash
+cd Downloads/Surgical-Annotation-Studio/       # or however it is named/extracted from zip
+python3 setup_venv.py
+```
+
+When it finishes, it prints the exact command to activate the venv.
+Run that command once in each new terminal before starting the app.
+
+On Windows, `python`, `python3` and `py` can each start a different
+Python, for example a python.org install and the Microsoft Store one.
+The script doesn't depend on which one you used to start it:
+- It lists every installed Python and picks a 64-bit python.org install,
+  3.10 or newer. It skips the Microsoft Store Python, which PyInstaller
+  doesn't work well with.
+- If no suitable Python is installed, it says so and links to the
+  python.org download. Python 3.12 is a good choice.
+- If the folder is too deep for Windows' 260-character path limit, which
+  PySide6's long file paths can hit, it creates the venv in
+  `%USERPROFILE%\.venvs\` instead of the project folder.
+
+Options: `--build` also installs the packaging tools,
+`--recreate` rebuilds an existing venv, and `--python <exe>` or
+`--venv <path>` override the choices it makes.
+
+<details>
+<summary>Setting up the venv by hand instead</summary>
+
+```bash
+python3 -m venv .venv                  # Windows: py -3.12 -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Use `py`, the Python launcher that the python.org installer adds, to
-create the venv. On Windows, `python` and `python3` can point to
-different installs, such as a python.org install and the Microsoft Store
-one. If PowerShell refuses to run `Activate.ps1` ("running scripts is
-disabled"), run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
-In cmd.exe, use `.venv\Scripts\activate.bat` instead.
+On Windows, check `py -0p` first and pick a python.org install, not the
+Microsoft Store one.
+</details>
+
+If PowerShell refuses to run `Activate.ps1` ("running scripts is
+disabled"), run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+once and try again, or use the `activate.bat` command in cmd.exe.
 
 Once the venv is active, `python` refers to the venv's interpreter on
 every OS. Use `python` for all the commands below.
@@ -101,12 +126,58 @@ See every case in the project and how much work is done on each
    the whole case (see below); it's remembered per case, so reopening a
    case later automatically shows the same rubric again.
 3. **Standardize** it to a consistent frame rate and resolution.
-4. Scrub through the video and cut it into clips: set a **Clip type**
-   (`stitch` or `knot_tying` -- the Stitch ID field prefills with
-   `stitch_`/`knot_` accordingly, just type the rest of the name), mark
-   **Set start = playhead** and **Set end = playhead**, then
-   **Add to clip list**. Repeat for every clip in the case, then
-   **Cut all clips**.
+4. Scrub through the video and mark each clip:
+   1. Pick a **Clip type** (`stitch` or `knot_tying`). The **Stitch ID**
+      field prefills with `stitch_` or `knot_`, so type only the rest,
+      e.g. `01`. Stitch IDs don't have to follow time order.
+   2. Press **I** (**Set start**) at the first frame and **O**
+      (**Set end**) at the last. The two chips next to the buttons show
+      what's set:
+
+      | Chip | Meaning |
+      |---|---|
+      | grey, dashed: `Start: not set` | not marked yet |
+      | green: `Start ✓ 00:00:14.000` | marked; click it to jump back there |
+      | red: `End ✗ …` | end is before start; set one of them again |
+
+      The line under the chips always says what to do next and shows the
+      clip's length once both ends are marked.
+   3. Set the per-stitch scores (see step 5), then press **Enter** in the
+      Stitch ID field, **Ctrl+Enter** anywhere in the tab, or click
+      **Add clip**.
+
+   The app checks each clip before adding it. It rejects a Stitch ID
+   that's only the prefix (`stitch_`) or that's already in the list. It
+   asks before you add a clip that overlaps another clip of the same
+   type, or one whose file was already cut. If you type the case ID in
+   front of the stitch ID, it's removed, since the app adds it anyway.
+
+   **The clip list.** Clips are listed in start-time order:
+   - The row of any clip the playhead is inside is highlighted.
+   - Double-click a row to jump to that clip's start.
+   - The video's seek bar shows every clip as a band in the same
+     highlight color, and the range you're marking in green.
+
+   **Editing a clip.** Select a row and click **Edit selected**. Its ID,
+   type, start/end and scores load into the fields above, the clip turns
+   orange on the seek bar, and a yellow line says which clip you're
+   editing. Change anything, re-mark start/end if needed, and click
+   **Update** (or press Enter), or **Cancel edit** to discard. If you were
+   halfway through entering a new clip, it's set aside while you edit and
+   comes back afterwards, scores included.
+
+   Buttons that don't apply right now are greyed out. For example, **Add
+   clip** turns on only once a valid start and end are set, and **Cut
+   all** turns off while you're editing.
+
+   **The list is saved as you go.** Every add, update and removal is
+   saved to `pose/<case_id>/_clip_list_draft.json`. If the app closes,
+   crashes, or a cut fails, select the same case again and the list comes
+   back. It's cleared only for clips that were cut successfully.
+
+   When the list is complete, click **Cut all clips**. It asks first if
+   any stitch clip has no scores. Clips are saved as
+   `pose/<case_id>/<case_id>_<stitch_id>.mp4`.
 5. While the video's on screen, score it. Which fields show up depends on
    the selected **Case type**:
    - **PJ / Whipple**: OSATS + RSS subitems case-level; PJ and the
@@ -122,8 +193,11 @@ See every case in the project and how much work is done on each
    accidentally reuse a leftover value for the next case or stitch. Only
    the subitems you actually set a value for get saved -- leaving one
    blank just skips it. Case-level scores save with **Save case-level
-   scores**; per-stitch scores are set before clicking **Add to clip
-   list** so they're captured with that clip (stitch clips only).
+   scores**. Per-stitch scores are set before clicking **Add clip**, so
+   they're stored with that clip (stitch clips only). To change them
+   later, use **Edit selected**. The heading above the per-stitch fields
+   says whether they apply to the next new clip or to the clip you're
+   editing.
 
    Adding a new procedure's rubric later is a config change, not a code
    change -- see `core/config.py`'s `RUBRICS` registry.
@@ -165,6 +239,10 @@ frame without thinking about it ("Force re-save" is there only for peace
 of mind). Zoom with the controls next to it; middle-click-drag to pan
 while zoomed in.
 
+Labeled frames are saved under `labeled-data/<case_id>_<stitch_id>/` as
+`<case_id>_<stitch_id>_imgNNN.png`, so every image file says which case
+and stitch it came from.
+
 ### 3. Semantic States
 Pick a case and clip, enter your name as **Rater**, then scrub the video
 and press **1-9** at the exact moment each state begins. Use
@@ -194,8 +272,10 @@ Preprocessing tab -- this tab is for reviewing, not entering scores.
 ```
 <project>/
   videos/            imported case videos
-  pose/<case_id>/    standardized video + cut clips
-  labeled-data/       DeepLabCut keypoint labels + images
+  pose/<case_id>/    standardized video, cut clips (<case_id>_<stitch_id>.mp4),
+                     and _clip_list_draft.json while a clip list is unfinished
+  labeled-data/      DeepLabCut keypoint labels + images
+                     (<case_id>_<stitch_id>/<case_id>_<stitch_id>_imgNNN.png)
   semantic/          semantic-state annotations (one file per case + rater)
   clinical/          clinical CSV + score_entries_<case_id>.csv (one per case)
   config.yaml        project settings (bodyparts, scorer, target fps/resolution)
@@ -217,7 +297,9 @@ picks up the change automatically.
 Want to share this with someone who doesn't have Python installed? See
 [`packaging/README.md`](packaging/README.md) to build a double-clickable
 `.app` (macOS) or `.exe` (Windows) with PyInstaller -- including how to
-have GitHub build both automatically for you.
+have GitHub build both automatically for you. Set up the venv with
+`py setup_venv.py --build` (Windows) or `python3 setup_venv.py --build`
+to get the packaging tools too.
 
 ## Known limitations
 
