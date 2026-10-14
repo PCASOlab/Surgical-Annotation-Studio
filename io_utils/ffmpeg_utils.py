@@ -61,11 +61,23 @@ def _platform_dir_name() -> str:
 
 def _bundled_binary(name: str) -> Optional[Path]:
     """Look for a bundled ffmpeg/ffprobe under
-    resources/ffmpeg/<platform>/<name>[.exe]."""
+    resources/ffmpeg/<platform>/<name>[.exe] -- in the bundle directory, and
+    on macOS also in the .app's Contents/Resources (where PyInstaller puts
+    data files)."""
     exe_name = f"{name}.exe" if platform.system().lower() == "windows" else name
-    candidate = _app_root() / "resources" / "ffmpeg" / _platform_dir_name() / exe_name
-    if candidate.exists():
-        return candidate
+    roots = [_app_root()]
+    if getattr(sys, "frozen", False) and platform.system().lower() == "darwin":
+        roots.append(Path(sys.executable).resolve().parent.parent / "Resources")
+    for root in roots:
+        candidate = root / "resources" / "ffmpeg" / _platform_dir_name() / exe_name
+        if candidate.exists():
+            if os.name == "posix" and not os.access(candidate, os.X_OK):
+                # packaging can drop the executable bit; restore it if allowed
+                try:
+                    candidate.chmod(candidate.stat().st_mode | 0o111)
+                except OSError:
+                    continue
+            return candidate
     return None
 
 

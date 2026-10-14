@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import ProjectPaths, NEEDLE_BODYPARTS, TOOL_BODYPARTS, DEFAULT_SCORER, DEFAULT_CASE_TYPE
+from io_utils.safe_io import atomic_write_text
 
 
 @dataclass
@@ -105,7 +106,7 @@ class ProjectManager:
             f"target_width: {c.target_width}",
             f"target_height: {c.target_height}",
         ]
-        self.paths.config_yaml.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        atomic_write_text(self.paths.config_yaml, "\n".join(lines) + "\n")
 
     def _load_config_yaml(self) -> None:
         if not self.paths.config_yaml.exists():
@@ -150,7 +151,7 @@ class ProjectManager:
             "stitches": {k: asdict(v) for k, v in self._stitches.items()},
             "case_types": dict(self._case_types),
         }
-        self.paths.meta_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        atomic_write_text(self.paths.meta_json, json.dumps(data, indent=2))
 
     def _load_meta(self) -> None:
         if not self.paths.meta_json.exists():
@@ -171,8 +172,17 @@ class ProjectManager:
     def set_case_type(self, case_id: str, case_type: str) -> None:
         if self._case_types.get(case_id) == case_type:
             return
+        previous = self._case_types.get(case_id)
         self._case_types[case_id] = case_type
-        self._save_meta()
+        try:
+            self._save_meta()
+        except OSError:
+            # keep memory in step with the file if the save failed
+            if previous is None:
+                self._case_types.pop(case_id, None)
+            else:
+                self._case_types[case_id] = previous
+            raise
 
     def get_case_type(self, case_id: str) -> Optional[str]:
         return self._case_types.get(case_id)
@@ -220,8 +230,18 @@ class ProjectManager:
         return result
 
     def register_stitch(self, meta: StitchMeta) -> None:
-        self._stitches[f"{meta.case_id}/{meta.stitch_id}"] = meta
-        self._save_meta()
+        key = f"{meta.case_id}/{meta.stitch_id}"
+        previous = self._stitches.get(key)
+        self._stitches[key] = meta
+        try:
+            self._save_meta()
+        except OSError:
+            # keep memory in step with the file if the save failed
+            if previous is None:
+                self._stitches.pop(key, None)
+            else:
+                self._stitches[key] = previous
+            raise
 
     def get_stitch_meta(self, case_id: str, stitch_id: str) -> Optional[StitchMeta]:
         return self._stitches.get(f"{case_id}/{stitch_id}")

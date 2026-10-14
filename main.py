@@ -32,12 +32,14 @@ from PySide6.QtWidgets import QApplication
 from core.project import ProjectManager
 from widgets.main_window import MainWindow, choose_or_create_project
 from widgets.style import apply_app_style
+from widgets.save_guard import install_excepthook
 
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Surgical Annotation Studio")
     apply_app_style(app)
+    install_excepthook()
 
     if len(sys.argv) > 1:
         pm = ProjectManager.load(Path(sys.argv[1]))

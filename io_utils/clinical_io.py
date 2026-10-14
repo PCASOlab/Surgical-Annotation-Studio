@@ -20,11 +20,12 @@ Two responsibilities, kept intentionally separate:
    `_append_score_values` / `_save_case_scores` and
    widgets/existing_clips_tab.py.
 
-   Each CASE writes to its OWN file -- clinical/score_entries_<case_id>.csv
-   -- so everything about one case's scoring lives together and is easy
-   to find/share/audit on its own, regardless of how many stitches or
-   raters are involved. `load_score_entries` with no case_id merges every
-   such file for the Clinical tab's "all cases" review.
+   Each case + RATER writes to its OWN file --
+   clinical/score_entries_<case_id>_rater-<rater>.csv -- so raters working
+   in separate copies of a project never edit the same file, and their
+   work can be combined by copying files together. `load_score_entries`
+   merges a case's files (or every file, with no case_id) for the Clinical
+   tab. Older per-case files are split by migrate_legacy_score_files().
 
    Saving uses UPSERT semantics, not blind append: a new value for the
    same (case_id, video_id_annot, hogg_var, rater) replaces the old one in
@@ -45,13 +46,16 @@ from typing import Optional
 import pandas as pd
 
 from core.config import PII_COLUMNS, SAFE_CASE_KEY, CLINICAL_DISPLAY_FIELDS
+from io_utils.safe_io import atomic_write, read_locked_aware
+from core.timefmt import normalize_time_cell
+from io_utils import xlsx_mirror
 
 # NOTE: pcaso_var, key_step, pd_curve, pd_yank, j_curve, j_yank used to be
 # dedicated columns from an earlier "one combined row per stitch" scheme.
 # Every score is now its own row (scale/item/hogg_var/score), which made
 # those columns permanently blank dead weight -- removed. `start`/`stop`
 # are kept and get populated (the stitch's start/end offset into the
-# original video, in seconds) for stitch-level rows, when known.
+# original video, as HH:MM:SS.hh) for stitch-level rows, when known.
 SCORE_ENTRIES_COLUMNS = [
     "case_id", "case_type", "video_id_annot", "rater", "scale", "item",
     "hogg_var", "score", "start", "stop", "notes",
@@ -103,20 +107,28 @@ def _safe_slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", text.strip())
 
 
-def score_entries_path(clinical_dir: Path, case_id: Optional[str] = None) -> Path:
-    """Path to the score-entries CSV for a given case, e.g.
-    clinical/score_entries_pehCase1.csv. With no case_id, returns the
-    legacy combined-file path (only relevant as a fallback if an entry
-    somehow has no case_id set, which shouldn't normally happen)."""
-    if case_id:
-        return clinical_dir / f"score_entries_{_safe_slug(case_id)}.csv"
-    return clinical_dir / _LEGACY_COMBINED_FILENAME
+RATER_TAG = "_rater-"
+UNKNOWN_RATER = "unknown"
+
+
+def score_entries_path(clinical_dir: Path, case_id: str, rater: Optional[str]) -> Path:
+    """clinical/score_entries_<case_id>_rater-<rater>.csv. The 'rater-' tag
+    keeps one case's files from matching another case whose ID merely
+    starts the same way (pt_1 vs pt_11)."""
+    rater_slug = _safe_slug(rater) if rater and str(rater).strip() else UNKNOWN_RATER
+    return clinical_dir / f"score_entries_{_safe_slug(case_id)}{RATER_TAG}{rater_slug}.csv"
+
+
+def case_score_files(clinical_dir: Path, case_id: str) -> list[Path]:
+    """Every rater's score file for one case."""
+    if not clinical_dir.exists():
+        return []
+    return sorted(clinical_dir.glob(f"score_entries_{_safe_slug(case_id)}{RATER_TAG}*.csv"))
 
 
 def all_score_entry_files(clinical_dir: Path) -> list[Path]:
-    """Every score-entries file present -- one per case, plus the legacy
-    combined file if it exists (e.g. from a project created before this
-    per-case split, or an earlier per-case-type split)."""
+    """Every score file: per case + rater, plus any older per-case or
+    combined file that hasn't been migrated (still shown in the Clinical tab)."""
     if not clinical_dir.exists():
         return []
     files = sorted(clinical_dir.glob("score_entries_*.csv"))
@@ -126,20 +138,72 @@ def all_score_entry_files(clinical_dir: Path) -> list[Path]:
     return files
 
 
+def legacy_score_files(clinical_dir: Path) -> list[Path]:
+    """Score files from before the per-rater split."""
+    return [p for p in all_score_entry_files(clinical_dir) if RATER_TAG not in p.name]
+
+
+def migrate_legacy_score_files(clinical_dir: Path) -> list[str]:
+    """Split older per-case (or combined) score files into one file per case
+    + rater. Rows already present in a per-rater file win (they're newer).
+    Each old file is kept as <name>.migrated. Returns a line per old file."""
+    report = []
+    for old in legacy_score_files(clinical_dir):
+        groups: dict[Path, list[dict]] = {}
+        for row in _read_rows(old):
+            case_id = str(row.get("case_id", "") or "unknown-case")
+            target = score_entries_path(clinical_dir, case_id, row.get("rater", ""))
+            groups.setdefault(target, []).append(row)
+        for target, rows in groups.items():
+            existing = _read_rows(target)
+            have = {tuple(str(r.get(f, "")) for f in _UPSERT_KEY_FIELDS) for r in existing}
+            new = [r for r in rows
+                   if tuple(str(r.get(f, "")) for f in _UPSERT_KEY_FIELDS) not in have]
+            _write_rows(target, existing + new)
+        backup = old.with_name(old.name + ".migrated")
+        read_locked_aware(old, lambda o=old, b=backup: o.replace(b))
+        report.append(f"{old.name} -> {', '.join(sorted(t.name for t in groups)) or '(empty)'}")
+    return report
+
+
 def _read_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+
+    def read() -> list[dict]:
+        with open(path, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    return read_locked_aware(path, read)
+
+
+# Excel copy (<file>.xlsx): which columns hold times / numbers
+_SCORE_TIME_COLS = [SCORE_ENTRIES_COLUMNS.index(c) for c in ("start", "stop")]
+_SCORE_NUMBER_COLS = [SCORE_ENTRIES_COLUMNS.index(c) for c in ("item", "score")]
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=SCORE_ENTRIES_COLUMNS)
-        w.writeheader()
-        for row in rows:
-            w.writerow({col: row.get(col, "") for col in SCORE_ENTRIES_COLUMNS})
+    table = [list(SCORE_ENTRIES_COLUMNS)]
+    for row in rows:
+        out = {col: str(row.get(col, "") or "") for col in SCORE_ENTRIES_COLUMNS}
+        # one time format per file: older rows in plain seconds get
+        # converted whenever the file is rewritten
+        out["start"] = normalize_time_cell(out["start"])
+        out["stop"] = normalize_time_cell(out["stop"])
+        table.append([out[col] for col in SCORE_ENTRIES_COLUMNS])
+
+    def write(tmp: Path) -> None:
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(table)
+    atomic_write(path, write)
+    write_score_mirror(path, table)
+
+
+def write_score_mirror(path: Path, table: Optional[list[list[str]]] = None) -> bool:
+    """Excel copy of a score file (times as real hh:mm:ss.00 times)."""
+    if table is None:
+        table = xlsx_mirror.read_csv_rows(path)
+    return xlsx_mirror.write_mirror(path, table, header_rows=1, time_cols=_SCORE_TIME_COLS,
+                                    numeric_cols=_SCORE_NUMBER_COLS)
 
 
 def append_score_entry(clinical_dir: Path, entry: dict) -> None:
@@ -148,7 +212,8 @@ def append_score_entry(clinical_dir: Path, entry: dict) -> None:
     appending a duplicate, so re-saving an edited score updates it in
     place. (Function name kept for backward compatibility with existing
     call sites -- despite the name, this has upsert semantics.)"""
-    path = score_entries_path(clinical_dir, entry.get("case_id"))
+    path = score_entries_path(clinical_dir, entry.get("case_id") or "unknown-case",
+                              entry.get("rater"))
     rows = _read_rows(path)
     new_row = {col: str(entry.get(col, "")) for col in SCORE_ENTRIES_COLUMNS}
     new_key = tuple(new_row.get(f, "") for f in _UPSERT_KEY_FIELDS)
@@ -162,13 +227,29 @@ def append_score_entry(clinical_dir: Path, entry: dict) -> None:
     _write_rows(path, rows)
 
 
+def remove_score_entry(clinical_dir: Path, case_id: str, video_id_annot: str,
+                       hogg_var: str, rater: str) -> bool:
+    """Deletes the row matching (video_id_annot, hogg_var, rater) from the
+    case's score file, e.g. when a score is set back to blank. Returns
+    True if a row was removed."""
+    path = score_entries_path(clinical_dir, case_id, rater)
+    rows = _read_rows(path)
+    key = (str(video_id_annot), str(hogg_var), str(rater))
+    kept = [r for r in rows
+            if tuple(str(r.get(f, "")) for f in _UPSERT_KEY_FIELDS) != key]
+    if len(kept) == len(rows):
+        return False
+    _write_rows(path, kept)
+    return True
+
+
 def get_score_value(clinical_dir: Path, case_id: str, video_id_annot: str,
                      hogg_var: str, rater: str) -> Optional[str]:
     """Looks up a single previously-saved score (as a raw string -- caller
     converts), or None if nothing's been saved yet for this exact
     (video_id_annot, hogg_var, rater) combination. Used to prefill a
     dropdown with an existing value when a resident reopens a clip."""
-    path = score_entries_path(clinical_dir, case_id)
+    path = score_entries_path(clinical_dir, case_id, rater)
     for r in _read_rows(path):
         if (str(r.get("video_id_annot", "")) == str(video_id_annot)
                 and str(r.get("hogg_var", "")) == str(hogg_var)
@@ -179,21 +260,20 @@ def get_score_value(clinical_dir: Path, case_id: str, video_id_annot: str,
 
 
 def load_score_entries(clinical_dir: Path, case_id: Optional[str] = None) -> pd.DataFrame:
-    """With a case_id, loads just that case's file. With none, merges
-    every score-entries file found (every case + any legacy combined
-    file) for a project-wide view."""
-    if case_id:
-        path = score_entries_path(clinical_dir, case_id)
-        if not path.exists():
-            return pd.DataFrame(columns=SCORE_ENTRIES_COLUMNS)
-        return pd.read_csv(path)
-
+    """With a case_id, merges that case's files (every rater). With none,
+    merges every score file for a project-wide view."""
+    paths = case_score_files(clinical_dir, case_id) if case_id \
+        else all_score_entry_files(clinical_dir)
     frames = []
-    for path in all_score_entry_files(clinical_dir):
+    for path in paths:
         try:
-            frames.append(pd.read_csv(path))
+            frames.append(read_locked_aware(
+                path, lambda p=path: pd.read_csv(p, dtype=str, keep_default_na=False)))
         except pd.errors.EmptyDataError:
             continue
     if not frames:
         return pd.DataFrame(columns=SCORE_ENTRIES_COLUMNS)
-    return pd.concat(frames, ignore_index=True, sort=False)
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    if case_id and "case_id" in df.columns:
+        df = df[df["case_id"] == str(case_id)]
+    return df

@@ -28,12 +28,16 @@ from PySide6.QtWidgets import (
 )
 
 from core.project import ProjectManager, ProjectConfig
+from core.version import VERSION
+from io_utils import clinical_io, excel_copies, xlsx_mirror
+from widgets.save_guard import run_save
 from widgets.dashboard_tab import DashboardTab
 from widgets.preprocessing_tab import PreprocessingTab
 from widgets.existing_clips_tab import ExistingClipsTab
 from widgets.keypoint_tab import KeypointTab
 from widgets.semantic_tab import SemanticTab
 from widgets.clinical_tab import ClinicalTab
+from widgets.export_tab import ExportTab
 
 MIN_WINDOW_WIDTH = 1100
 MIN_WINDOW_HEIGHT = 700
@@ -54,9 +58,12 @@ class MainWindow(QMainWindow):
     def __init__(self, pm: ProjectManager):
         super().__init__()
         self.pm = pm
-        self.setWindowTitle(f"Surgical Annotation Studio \u2014 {pm.paths.root.name}")
+        self.setWindowTitle(f"Surgical Annotation Studio {VERSION} \u2014 {pm.paths.root.name}")
         self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         self.resize(1400, 900)
+        self._migrate_score_files()
+        xlsx_mirror.failure_hook = self._on_excel_copy_failed
+        excel_copies.refresh_stale(pm)  # copies missed while open in Excel
 
         self.tabs = QTabWidget()
         self.dashboard_tab = DashboardTab(pm)
@@ -65,6 +72,7 @@ class MainWindow(QMainWindow):
         self.keypoint_tab = KeypointTab(pm)
         self.semantic_tab = SemanticTab(pm)
         self.clinical_tab = ClinicalTab(pm)
+        self.export_tab = ExportTab(pm)
 
         self.tabs.addTab(_wrap_scrollable(self.dashboard_tab), "Dashboard")
         self.tabs.addTab(_wrap_scrollable(self.preprocessing_tab), "1. Preprocessing")
@@ -72,6 +80,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(_wrap_scrollable(self.keypoint_tab), "2. Keypoints (DLC)")
         self.tabs.addTab(_wrap_scrollable(self.semantic_tab), "3. Semantic States")
         self.tabs.addTab(_wrap_scrollable(self.clinical_tab), "4. Clinical")
+        self.tabs.addTab(_wrap_scrollable(self.export_tab), "Share / Export")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
         # zebra-striped rows make wide tables easier to follow
@@ -80,6 +89,30 @@ class MainWindow(QMainWindow):
 
         self._build_view_menu()
         self._was_maximized_before_fullscreen = True
+
+    def _migrate_score_files(self) -> None:
+        """Projects from before scores were filed per rater: split their
+        score files once, before any tab reads them."""
+        clinical = self.pm.paths.clinical
+        if not clinical_io.legacy_score_files(clinical):
+            return
+        report: list[str] = []
+        if not run_save(None, "Converting the score files to one file per rater",
+                        lambda: report.extend(clinical_io.migrate_legacy_score_files(clinical))):
+            return  # old files stay in place and are still shown in the Clinical tab
+        QMessageBox.information(
+            None, "Score files converted",
+            "Scores are now saved in one file per case and rater "
+            "(clinical/score_entries_<case>_rater-<rater>.csv). Converted:\n\n"
+            + "\n".join(report)
+            + "\n\nThe old files were kept with a .migrated ending.")
+
+    def _on_excel_copy_failed(self, path, _err) -> None:
+        # the CSV was saved; only its Excel copy is behind
+        self.statusBar().showMessage(
+            f"Saved -- but the Excel copy {path.name} is open in another program, so it "
+            f"wasn't updated. It will be updated on the next save after you close it.",
+            20000)
 
     # -- window state: fullscreen / maximize ------------------------------
     def _build_view_menu(self) -> None:
@@ -136,11 +169,13 @@ class MainWindow(QMainWindow):
             widget.refresh_cases()
         elif isinstance(widget, ClinicalTab):
             widget.refresh_cases()
+        elif isinstance(widget, ExportTab):
+            widget.refresh()
 
 
 def choose_or_create_project() -> ProjectManager | None:
     box = QMessageBox()
-    box.setWindowTitle("Surgical Annotation Studio")
+    box.setWindowTitle(f"Surgical Annotation Studio {VERSION}")
     box.setText("Open an existing project or create a new one?")
     open_btn = box.addButton("Open existing\u2026", QMessageBox.ButtonRole.AcceptRole)
     new_btn = box.addButton("Create new\u2026", QMessageBox.ButtonRole.ActionRole)
