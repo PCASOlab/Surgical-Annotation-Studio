@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 from widgets.save_guard import run_load, run_save
+from io_utils import excel_copies
 
 from core.config import CASE_TYPES, CASE_TYPE_LABELS
 from core.project import ProjectManager
@@ -83,7 +84,7 @@ class ClinicalTab(QWidget):
         self.case_type_filter.currentIndexChanged.connect(self._refresh_entries_table)
         row.addWidget(self.case_type_filter)
         btn_refresh = QPushButton("Refresh")
-        btn_refresh.clicked.connect(self.refresh_cases)
+        btn_refresh.clicked.connect(self._refresh_all)
         row.addWidget(btn_refresh)
         row.addStretch(1)
         right_l.addLayout(row)
@@ -101,9 +102,9 @@ class ClinicalTab(QWidget):
             "(e.g. scale = OSATS/RSS/GEARS) have a blank stitch column; "
             "\"subitem\" shows which one (e.g. osats_gentle, rss_knot, "
             "gears_autonomy). Stitch-level rows (e.g. PJ, yank_factor, "
-            "stitch_location) show the stitch ID and its start/stop offset "
-            "(seconds) into the original video. Each case is saved to its "
-            "own file (clinical/score_entries_<case_id>.csv)."
+            "stitch_location) show the stitch ID and its start/stop time "
+            "(HH:MM:SS.hh) in the original video. Each case is saved to its "
+            "own file per rater (clinical/score_entries_<case_id>_rater-<rater>.csv)."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #888;")
@@ -152,6 +153,10 @@ class ClinicalTab(QWidget):
         else:
             self.context_table.setRowCount(0)
             self._refresh_entries_table()
+
+    def _refresh_all(self) -> None:
+        excel_copies.refresh_stale(self.pm)  # catch up copies that were open in Excel
+        self.refresh_cases()
 
     def _load_csv(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(

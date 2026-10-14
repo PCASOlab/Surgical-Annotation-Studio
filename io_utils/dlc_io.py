@@ -25,6 +25,7 @@ from typing import Optional
 
 from core.config import NEEDLE_BODYPARTS
 from io_utils.safe_io import atomic_write, read_locked_aware
+from io_utils import xlsx_mirror
 
 
 def collected_data_path(labeled_data_root: Path, scorer: str) -> Path:
@@ -95,6 +96,15 @@ def write_collected_data(
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(rows)
     atomic_write(csv_path, write)
+    write_collected_data_mirror(csv_path, rows)
+
+
+def write_collected_data_mirror(csv_path: Path, rows: Optional[list[list[str]]] = None) -> bool:
+    """Excel copy of a CollectedData CSV (3 header rows, coordinates as
+    numbers). DeepLabCut itself only reads the .csv/.h5."""
+    if rows is None:
+        rows = xlsx_mirror.read_csv_rows(csv_path)
+    return xlsx_mirror.write_mirror(csv_path, rows, header_rows=3, numeric_from=3)
 
 
 def upsert_frame(

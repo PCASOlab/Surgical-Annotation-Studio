@@ -55,6 +55,7 @@ from core.config import (
 from core.project import ProjectManager, StitchMeta
 from io_utils import ffmpeg_utils, clinical_io
 from widgets.video_widget import VideoPlayerWidget, ms_to_timecode
+from core.timefmt import format_timecode
 from widgets.worker import FnWorker
 
 PREPROC_VIDEO_MIN_HEIGHT = 560
@@ -166,7 +167,13 @@ class PreprocessingTab(QWidget):
         row = QHBoxLayout()
         btn_import = QPushButton("Import video file\u2026")
         btn_import.clicked.connect(self._import_video)
-        row.addWidget(btn_import)
+        row.addWidget(btn_import, stretch=1)
+        btn_rescan = QPushButton("\u21bb Rescan videos folder")
+        btn_rescan.setToolTip("List videos copied or moved into the project's videos "
+                              "folder while the app is open (they're used in place, "
+                              "not copied).")
+        btn_rescan.clicked.connect(self._rescan_videos)
+        row.addWidget(btn_rescan)
         col.addLayout(row)
 
         form = QHBoxLayout()
@@ -521,7 +528,7 @@ class PreprocessingTab(QWidget):
         msg = f"{scale_name} cleared" if value is None else f"{scale_name}={value} saved"
         self.case_score_status.setText(
             f"\u2713 {msg} for {case_id} / {rater} "
-            f"(clinical/score_entries_{case_id}.csv)")
+            f"(clinical/{clinical_io.score_entries_path(Path(), case_id, rater).name})")
         self.case_score_status.setStyleSheet("color: #888;")
 
     def _maybe_prefill_stitch_id(self, clip_type: str) -> None:
@@ -540,10 +547,37 @@ class PreprocessingTab(QWidget):
             self.stitch_id_edit.setCursorPosition(len(prefix))
 
     # -- source video management -------------------------------------------
-    def _refresh_source_list(self) -> None:
+    def _refresh_source_list(self) -> list[str]:
+        """Re-read videos/ and keep the current selection without reloading it."""
+        current = self.source_list.currentItem().text() if self.source_list.currentItem() else None
+        names = [p.name for p in self.pm.list_source_videos()]
+        self.source_list.blockSignals(True)
         self.source_list.clear()
-        for p in self.pm.list_source_videos():
-            self.source_list.addItem(p.name)
+        self.source_list.addItems(names)
+        if current in names:
+            self.source_list.setCurrentRow(names.index(current))
+        self.source_list.blockSignals(False)
+        return names
+
+    def _rescan_videos(self) -> None:
+        before = {self.source_list.item(i).text() for i in range(self.source_list.count())}
+        names = self._refresh_source_list()
+        added = sorted(set(names) - before)
+        gone = sorted(before - set(names))
+        msg = f"Rescanned videos/: {len(names)} video(s)"
+        if added:
+            msg += f"; new: {', '.join(added)}"
+        if gone:
+            msg += f"; no longer there: {', '.join(gone)}"
+        self._log(msg + ("." if added or gone else ", no changes."))
+
+    def _free_video_name(self, name: str) -> Path:
+        """videos/<stem>_2<ext>, _3, ... -- the first name not taken."""
+        stem, suffix = Path(name).stem, Path(name).suffix
+        n = 2
+        while (self.pm.paths.videos / f"{stem}_{n}{suffix}").exists():
+            n += 1
+        return self.pm.paths.videos / f"{stem}_{n}{suffix}"
 
     def _import_video(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
@@ -555,14 +589,34 @@ class PreprocessingTab(QWidget):
         src = Path(path_str)
         self.pm.paths.videos.mkdir(parents=True, exist_ok=True)
         dst = self.pm.paths.videos / src.name
+        if dst.exists() and dst.resolve() != src.resolve():
+            # a different video with the same name is already in the project
+            alt = self._free_video_name(src.name)
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Video name already used")
+            box.setText(f"The project already has a video called '{src.name}'.")
+            box.setInformativeText(
+                f"Replace it with the file you picked, or import yours as "
+                f"'{alt.name}'? Clips already cut from the existing video keep "
+                f"their files either way.")
+            keep_btn = box.addButton(f"Import as '{alt.name}'", QMessageBox.ButtonRole.AcceptRole)
+            replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(keep_btn)
+            box.exec()
+            if box.clickedButton() is keep_btn:
+                dst = alt
+            elif box.clickedButton() is not replace_btn:
+                return
         if dst.resolve() != src.resolve():
             if not run_save(self, f"Importing {src.name}", lambda: shutil.copy2(src, dst)):
                 return
         self._refresh_source_list()
-        self._log(f"Imported {src.name}")
+        self._log(f"Imported {src.name}" + (f" as {dst.name}" if dst.name != src.name else ""))
         # select the newly-imported video so Case ID/preview update to it
         # right away, rather than leaving whatever was previously selected
-        items = self.source_list.findItems(src.name, Qt.MatchFlag.MatchExactly)
+        items = self.source_list.findItems(dst.name, Qt.MatchFlag.MatchExactly)
         if items:
             self.source_list.setCurrentItem(items[0])
 
@@ -578,7 +632,8 @@ class PreprocessingTab(QWidget):
                 self._source_info_cache[name] = info
                 self.probe_label.setText(
                     f"Native/original resolution: {info.width}x{info.height} @ {info.fps:.2f} fps, "
-                    f"{info.duration_sec:.1f}s, {info.nframes} frames, codec={info.codec}. "
+                    f"length {format_timecode(info.duration_sec)}, {info.nframes} frames, "
+                    f"codec={info.codec}. "
                     f"This original resolution is recorded for every clip cut from it, "
                     f"even after standardizing."
                 )
@@ -888,8 +943,8 @@ class PreprocessingTab(QWidget):
                     return
             editing.update(clip)  # in place: keeps identity for a running cut
             if editing.get("status") == "cut":
-                self._log(f"Updated '{stitch_id}' -- scores saved to "
-                          f"clinical/score_entries_{case_id}.csv.")
+                self._log(f"Updated '{stitch_id}' -- scores saved to clinical/"
+                          f"{clinical_io.score_entries_path(Path(), case_id, editing.get('rater')).name}.")
             elif editing.get("status") == "recut":
                 self._log(f"Updated '{stitch_id}' -- new start/end, it will be cut again "
                           f"with Cut all.")
@@ -1272,7 +1327,7 @@ class PreprocessingTab(QWidget):
                  lambda: self.pm.set_case_type(case_id, case_type))
         self._log(f"Done. {len(registered)} of {len(results)} clip(s) written to "
                   f"pose/{case_id}/ and registered "
-                  f"(stitch scores saved to clinical/score_entries_{case_id}.csv).")
+                  f"(stitch scores saved to clinical/score_entries_{case_id}_rater-<rater>.csv).")
         # Mark what was cut (matched by ID + times, so a clip edited or added
         # while the cut was running is left alone) and drop it from the draft.
         done = {(c["stitch_id"], c["start_ms"], c["end_ms"]) for c in registered}
@@ -1308,8 +1363,8 @@ class PreprocessingTab(QWidget):
                 "item": d.item,
                 "hogg_var": scale_name,
                 "score": value,
-                "start": "" if start is None else f"{start:.3f}",
-                "stop": "" if stop is None else f"{stop:.3f}",
+                "start": "" if start is None else format_timecode(start),
+                "stop": "" if stop is None else format_timecode(stop),
             })
 
     def _log(self, msg: str) -> None:

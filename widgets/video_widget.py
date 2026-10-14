@@ -20,6 +20,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from core.timefmt import format_timecode, parse_timecode
 from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF
 from PySide6.QtGui import (
     QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut, QColor, QPainter,
@@ -36,40 +37,18 @@ DEFAULT_VIDEO_MIN_HEIGHT = 480
 
 
 def ms_to_timecode(ms: float) -> str:
-    total_ms = int(round(ms))
-    h, rem = divmod(total_ms, 3_600_000)
-    m, rem = divmod(rem, 60_000)
-    s, ms_ = divmod(rem, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d}.{ms_:03d}"
+    """HH:MM:SS.hh -- the app-wide display format (see core/timefmt.py)."""
+    return format_timecode(ms / 1000.0)
 
 
 def timecode_to_ms(text: str) -> Optional[float]:
-    """Parses a typed timestamp into milliseconds. Accepts HH:MM:SS.mmm,
-    MM:SS.mmm, or plain seconds (SS.mmm) -- the colons are optional
-    separators, and the fractional part is optional too. Returns None if
-    the text can't be parsed (caller should leave the field's contents
-    alone and flag it rather than seek anywhere)."""
-    text = text.strip()
-    if not text:
-        return None
-    parts = text.split(":")
-    if len(parts) > 3:
-        return None
-    try:
-        if len(parts) == 1:
-            seconds = float(parts[0])
-        elif len(parts) == 2:
-            minutes = int(parts[0])
-            seconds = minutes * 60 + float(parts[1])
-        else:
-            hours = int(parts[0])
-            minutes = int(parts[1])
-            seconds = hours * 3600 + minutes * 60 + float(parts[2])
-    except ValueError:
-        return None
-    if seconds < 0:
-        return None
-    return seconds * 1000.0
+    """Parses a typed timestamp into milliseconds. Accepts HH:MM:SS.hh,
+    MM:SS.hh, or plain seconds, with any number of decimals (so older
+    HH:MM:SS.mmm still works). Returns None if the text can't be parsed
+    (caller should leave the field's contents alone and flag it rather
+    than seek anywhere)."""
+    seconds = parse_timecode(text)
+    return None if seconds is None else seconds * 1000.0
 
 
 class _MarkedSlider(QSlider):
@@ -204,7 +183,7 @@ class VideoPlayerWidget(QWidget):
 
         controls.addWidget(QLabel("Go to:"))
         self.time_edit = QLineEdit()
-        self.time_edit.setPlaceholderText("HH:MM:SS.mmm")
+        self.time_edit.setPlaceholderText("HH:MM:SS.hh")
         self.time_edit.setMaximumWidth(100)
         self.time_edit.returnPressed.connect(self._on_time_edit_entered)
         controls.addWidget(self.time_edit)

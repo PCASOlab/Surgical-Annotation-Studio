@@ -25,7 +25,8 @@ first (same safety-net idea as the Semantic tab's autosave), so nothing
 is lost from forgetting to click Save before moving to the next clip.
 
 Each case's scores are saved to their own file --
-clinical/score_entries_<case_id>.csv -- reviewable in the Clinical tab.
+clinical/score_entries_<case_id>_rater-<rater>.csv -- reviewable in the
+Clinical tab.
 """
 from __future__ import annotations
 from collections import Counter
@@ -33,11 +34,12 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
-    QPushButton, QFormLayout, QScrollArea,
+    QPushButton, QFormLayout, QScrollArea, QMessageBox,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 from widgets.style import mark_primary
 from widgets.save_guard import run_load, run_save
+from core.timefmt import format_timecode
 
 from core import config
 from core.config import CASE_TYPES, CASE_TYPE_LABELS, DEFAULT_CASE_TYPE
@@ -272,6 +274,13 @@ class ExistingClipsTab(QWidget):
         Returns False if they were not saved."""
         what = f"Scores for '{video_id_annot}'" if video_id_annot else \
             f"Case-level scores for '{case_id}'"
+        if not rater:
+            QMessageBox.warning(
+                self, "Rater name needed",
+                f"{what} were not saved: enter your name in Rater first "
+                f"(scores are saved in one file per rater).")
+            self.status_label.setText(f"\u2717 {what} were NOT saved -- no rater name.")
+            return False
         ok = run_save(self, what, lambda: self._write_scores_now(
             case_id, case_type, rater, video_id_annot, values))
         if not ok:
@@ -295,8 +304,8 @@ class ExistingClipsTab(QWidget):
                 "item": d.item,
                 "hogg_var": scale_name,
                 "score": value,
-                "start": "" if meta is None else f"{meta.start_sec_in_source:.3f}",
-                "stop": "" if meta is None else f"{meta.end_sec_in_source:.3f}",
+                "start": "" if meta is None else format_timecode(meta.start_sec_in_source),
+                "stop": "" if meta is None else format_timecode(meta.end_sec_in_source),
             })
 
     def _load_case_scores(self) -> None:

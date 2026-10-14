@@ -52,7 +52,8 @@ QUALITY_CHECK_TEXT = [
     "\u2022 Time cells formatted as mm:ss.00.",
 ]
 
-TIME_NUMBER_FORMAT = "mm:ss.00"
+# hours too: "mm:ss.00" hid them for anything past the first hour
+TIME_NUMBER_FORMAT = "hh:mm:ss.00"
 
 
 def _clear_row_cells(ws: Worksheet, row_idx: int) -> None:
