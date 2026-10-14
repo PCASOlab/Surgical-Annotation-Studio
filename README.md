@@ -170,14 +170,36 @@ See every case in the project and how much work is done on each
    clip** turns on only once a valid start and end are set, and **Cut
    all** turns off while you're editing.
 
-   **The list is saved as you go.** Every add, update and removal is
-   saved to `pose/<case_id>/_clip_list_draft.json`. If the app closes,
-   crashes, or a cut fails, select the same case again and the list comes
-   back. It's cleared only for clips that were cut successfully.
+   **Resuming a case.** Selecting a case shows all of its clips, and the
+   **Status** column says where each one stands:
 
-   When the list is complete, click **Cut all clips**. It asks first if
-   any stitch clip has no scores. Clips are saved as
-   `pose/<case_id>/<case_id>_<stitch_id>.mp4`.
+   | Status | Meaning |
+   |---|---|
+   | `• not cut` | in the list, not cut yet |
+   | `✂ cut` (grey text) | already cut; its scores come from the score file, for the current rater |
+   | `↻ re-cut needed` | cut before, but its start/end changed (or the file is missing) |
+
+   Not-yet-cut clips are saved to `pose/<case_id>/_clip_list_draft.json`
+   on every add, update and removal. If the app closes, crashes, or a cut
+   fails, select the same case again and they come back. On the seek bar,
+   cut clips are solid bands and clips still to cut are lighter.
+
+   **Editing a cut clip.** **Edit selected** works on cut clips too, but
+   their stitch ID and type are locked, since they name files and score
+   rows that already exist.
+   - Change only scores and click **Update**: they're written to the score
+     file straight away. Clearing a score removes its row.
+   - Change start/end: the clip becomes `↻ re-cut needed` and is cut again,
+     with its scores, by the next **Cut all clips**.
+
+   **Remove selected** works on clips that aren't cut yet. On a
+   `↻ re-cut needed` clip it discards the change and restores the cut
+   version. It never deletes a cut clip; to drop one, delete its file
+   from `pose/<case_id>/`.
+
+   **Cut all clips** cuts only clips that are `not cut` or
+   `re-cut needed`. It asks first if any of them is a stitch clip with no
+   scores. Clips are saved as `pose/<case_id>/<case_id>_<stitch_id>.mp4`.
 5. While the video's on screen, score it. Which fields show up depends on
    the selected **Case type**:
    - **PJ / Whipple**: OSATS + RSS subitems case-level; PJ and the
@@ -188,16 +210,28 @@ See every case in the project and how much work is done on each
      (one value per stitch, not separate PD/J ones), needle handling,
      knot security, and crural suturing skill per stitch.
 
-   All scoring dropdowns start blank so it's obvious what hasn't been
-   entered yet, and reset back to blank after saving/adding so you don't
-   accidentally reuse a leftover value for the next case or stitch. Only
-   the subitems you actually set a value for get saved -- leaving one
-   blank just skips it. Case-level scores save with **Save case-level
-   scores**. Per-stitch scores are set before clicking **Add clip**, so
-   they're stored with that clip (stitch clips only). To change them
-   later, use **Edit selected**. The heading above the per-stitch fields
-   says whether they apply to the next new clip or to the clip you're
-   editing.
+   **Enter your Rater name first.** The scoring dropdowns stay disabled
+   until a rater and a case ID are filled in, so every saved score
+   records who gave it.
+
+   **Case-level scores save as soon as you pick them**, with no save
+   button. Changing a value replaces the saved one, and setting a
+   dropdown back to blank removes it. The line under the dropdowns
+   confirms each save. When you open a case, or change the rater, the
+   dropdowns show what's already saved for that case and rater. Blank
+   means nothing is saved.
+
+   **Per-stitch scores** are set before clicking **Add clip** and are
+   stored with that clip (stitch clips only), together with the rater's
+   name. They're written to the score file when the clips are cut. To
+   change them before cutting, use **Edit selected**. The heading above
+   the per-stitch fields says whether they apply to the next new clip or
+   to the clip you're editing. After adding a clip they reset to blank,
+   so a leftover value isn't reused for the next stitch. Only the
+   subitems you set get saved; leaving one blank skips it.
+
+   Both kinds go to `clinical/score_entries_<case_id>.csv`, one row per
+   subitem. Case-level rows have an empty `video_id_annot` column.
 
    Adding a new procedure's rubric later is a config change, not a code
    change -- see `core/config.py`'s `RUBRICS` registry.

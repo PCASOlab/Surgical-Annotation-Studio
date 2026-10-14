@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 from widgets.no_scroll_combo import NoScrollComboBox
+from widgets.save_guard import run_load, run_save
 
 from core.config import CASE_TYPES, CASE_TYPE_LABELS
 from core.project import ProjectManager
@@ -128,7 +129,9 @@ class ClinicalTab(QWidget):
         """
         current = self.case_combo.currentText()
         known = set(self.pm.list_cases())
-        score_df = clinical_io.load_score_entries(self.pm.paths.clinical)
+        score_df = run_load(self, "The score files",
+                            lambda: clinical_io.load_score_entries(self.pm.paths.clinical),
+                            default=pd.DataFrame())
         if not score_df.empty and "case_id" in score_df.columns:
             known |= set(score_df["case_id"].dropna().astype(str))
         if self._clinical_df is not None:
@@ -160,8 +163,13 @@ class ClinicalTab(QWidget):
         dst = self.pm.paths.clinical / src.name
         self.pm.paths.clinical.mkdir(parents=True, exist_ok=True)
         if src.resolve() != dst.resolve():
-            dst.write_bytes(src.read_bytes())
-        self._clinical_df = clinical_io.load_clinical_csv(dst)
+            if not run_save(self, f"Copying {src.name} into the project",
+                            lambda: dst.write_bytes(src.read_bytes())):
+                return
+        df = run_load(self, dst.name, lambda: clinical_io.load_clinical_csv(dst), default=None)
+        if df is None:
+            return
+        self._clinical_df = df
         self.refresh_cases()
 
     def _on_case_changed(self, case_id: str) -> None:
@@ -177,10 +185,11 @@ class ClinicalTab(QWidget):
     # -- score entry review ---------------------------------------------------
     def _refresh_entries_table(self) -> None:
         case_id = self.case_combo.currentText()
-        if case_id and not self.all_cases_check.isChecked():
-            df = clinical_io.load_score_entries(self.pm.paths.clinical, case_id=case_id)
-        else:
-            df = clinical_io.load_score_entries(self.pm.paths.clinical)
+        only = case_id if case_id and not self.all_cases_check.isChecked() else None
+        df = run_load(self, "The score files",
+                      lambda: clinical_io.load_score_entries(self.pm.paths.clinical,
+                                                              case_id=only),
+                      default=pd.DataFrame())
 
         case_type = self.case_type_filter.currentData()
         if case_type and not df.empty and "case_type" in df.columns:

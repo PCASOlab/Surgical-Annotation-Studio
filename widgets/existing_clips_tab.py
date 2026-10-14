@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 from widgets.style import mark_primary
+from widgets.save_guard import run_load, run_save
 
 from core import config
 from core.config import CASE_TYPES, CASE_TYPE_LABELS, DEFAULT_CASE_TYPE
@@ -266,7 +267,19 @@ class ExistingClipsTab(QWidget):
 
     # -- score read/write -------------------------------------------------------
     def _write_scores(self, case_id: str, case_type: str, rater: str,
-                       video_id_annot: str, values: dict[str, int]) -> None:
+                       video_id_annot: str, values: dict[str, int]) -> bool:
+        """Save the scores; on a file error the user can Retry or Skip.
+        Returns False if they were not saved."""
+        what = f"Scores for '{video_id_annot}'" if video_id_annot else \
+            f"Case-level scores for '{case_id}'"
+        ok = run_save(self, what, lambda: self._write_scores_now(
+            case_id, case_type, rater, video_id_annot, values))
+        if not ok:
+            self.status_label.setText(f"\u2717 {what} were NOT saved.")
+        return ok
+
+    def _write_scores_now(self, case_id: str, case_type: str, rater: str,
+                          video_id_annot: str, values: dict[str, int]) -> None:
         rubric = config.RUBRICS.get(case_type, {})
         meta = self.pm.get_stitch_meta(case_id, video_id_annot) if video_id_annot else None
         for scale_name, value in values.items():
@@ -291,10 +304,12 @@ class ExistingClipsTab(QWidget):
             return
         rater = self.rater_edit.text().strip()
         found = 0
+        case_id = self._loaded_case
+        saved = run_load(self, f"Saved scores for '{case_id}'", lambda: {
+            name: clinical_io.get_score_value(self.pm.paths.clinical, case_id, "", name, rater)
+            for name in self.case_combos}, default={})
         for scale_name, combo in self.case_combos.items():
-            val = clinical_io.get_score_value(
-                self.pm.paths.clinical, self._loaded_case, "", scale_name, rater
-            )
+            val = saved.get(scale_name)
             if val is None:
                 continue
             idx = combo.findData(int(float(val)))
@@ -315,8 +330,11 @@ class ExistingClipsTab(QWidget):
         if not values:
             self.status_label.setText("Nothing selected -- pick at least one case-level score first.")
             return
-        self._write_scores(self._loaded_case, case_type, rater, "", values)
-        self.pm.set_case_type(self._loaded_case, case_type)
+        if not self._write_scores(self._loaded_case, case_type, rater, "", values):
+            return
+        case_id = self._loaded_case
+        run_save(self, f"The case type of '{case_id}'",
+                 lambda: self.pm.set_case_type(case_id, case_type))
         self.status_label.setText(
             f"Saved case-level scores for '{self._loaded_case}': "
             f"{', '.join(f'{k}={v}' for k, v in values.items())}"
@@ -327,10 +345,13 @@ class ExistingClipsTab(QWidget):
             return
         rater = self.rater_edit.text().strip()
         found = 0
+        case_id, stitch_id = self._loaded_case, self._loaded_stitch
+        saved = run_load(self, f"Saved scores for '{stitch_id}'", lambda: {
+            name: clinical_io.get_score_value(self.pm.paths.clinical, case_id, stitch_id,
+                                              name, rater)
+            for name in self.stitch_combos}, default={})
         for scale_name, combo in self.stitch_combos.items():
-            val = clinical_io.get_score_value(
-                self.pm.paths.clinical, self._loaded_case, self._loaded_stitch, scale_name, rater
-            )
+            val = saved.get(scale_name)
             if val is None:
                 continue
             idx = combo.findData(int(float(val)))
@@ -351,7 +372,9 @@ class ExistingClipsTab(QWidget):
         if not values:
             self.status_label.setText("Nothing selected -- pick at least one score first.")
             return
-        self._write_scores(self._loaded_case, case_type, rater, self._loaded_stitch, values)
+        if not self._write_scores(self._loaded_case, case_type, rater,
+                                  self._loaded_stitch, values):
+            return
         self.status_label.setText(
             f"Saved scores for '{self._loaded_stitch}': "
             f"{', '.join(f'{k}={v}' for k, v in values.items())}"

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from widgets.no_scroll_combo import NoScrollComboBox
 from widgets.style import mark_primary
+from widgets.save_guard import run_load, run_save
 
 from core.config import EVENT_TYPES, EVENT_HOTKEYS
 from core.project import ProjectManager
@@ -236,10 +237,14 @@ class SemanticTab(QWidget):
                 f"switching clips, or go back and save this stitch manually."
             )
             return False
-        self._write_annotation(self._loaded_case, self._loaded_stitch,
-                                self._events, self.comments_edit.toPlainText())
+        case_id, stitch_id = self._loaded_case, self._loaded_stitch
+        events, comments = list(self._events), self.comments_edit.toPlainText()
+        if not run_save(self, f"The annotation of '{stitch_id}' (case '{case_id}')",
+                        lambda: self._write_annotation(case_id, stitch_id, events, comments)):
+            self.status_label.setText(f"\u2717 '{stitch_id}' was NOT saved")
+            return False
         self.status_label.setText(
-            f"Auto-saved '{self._loaded_stitch}' (case '{self._loaded_case}') \u2713"
+            f"Auto-saved '{stitch_id}' (case '{case_id}') \u2713"
         )
         return True
 
@@ -386,7 +391,10 @@ class SemanticTab(QWidget):
             QMessageBox.information(self, "Not found", f"No existing file at {xlsx_path.name}.")
             return
         stitch_id = self.stitch_combo.currentText()
-        rows = semantic_io.read_rows(xlsx_path)
+        rows = run_load(self, f"{xlsx_path.name}", lambda: semantic_io.read_rows(xlsx_path),
+                        default=None)
+        if rows is None:
+            return
         match = next((r for r in rows if r.pcaso_var == stitch_id), None)
         if match is None:
             QMessageBox.information(self, "Not found",
@@ -430,7 +438,11 @@ class SemanticTab(QWidget):
             QMessageBox.warning(self, "Missing info", "Enter a rater name first.")
             return
         stitch_id = self.stitch_combo.currentText()
-        self._write_annotation(self._current_case, stitch_id, self._events,
-                                self.comments_edit.toPlainText())
+        case_id, events = self._current_case, list(self._events)
+        comments = self.comments_edit.toPlainText()
+        if not run_save(self, f"The annotation of '{stitch_id}'",
+                        lambda: self._write_annotation(case_id, stitch_id, events, comments)):
+            self.status_label.setText(f"\u2717 '{stitch_id}' was NOT saved")
+            return
         self.status_label.setText(f"Saved '{stitch_id}' \u2713")
         QMessageBox.information(self, "Saved", f"Saved to {xlsx_path}")

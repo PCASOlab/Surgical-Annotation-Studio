@@ -45,6 +45,7 @@ from typing import Optional
 import pandas as pd
 
 from core.config import PII_COLUMNS, SAFE_CASE_KEY, CLINICAL_DISPLAY_FIELDS
+from io_utils.safe_io import atomic_write, read_locked_aware
 
 # NOTE: pcaso_var, key_step, pd_curve, pd_yank, j_curve, j_yank used to be
 # dedicated columns from an earlier "one combined row per stitch" scheme.
@@ -129,17 +130,21 @@ def all_score_entry_files(clinical_dir: Path) -> list[Path]:
 def _read_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+
+    def read() -> list[dict]:
+        with open(path, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    return read_locked_aware(path, read)
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=SCORE_ENTRIES_COLUMNS)
-        w.writeheader()
-        for row in rows:
-            w.writerow({col: row.get(col, "") for col in SCORE_ENTRIES_COLUMNS})
+    def write(tmp: Path) -> None:
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=SCORE_ENTRIES_COLUMNS)
+            w.writeheader()
+            for row in rows:
+                w.writerow({col: row.get(col, "") for col in SCORE_ENTRIES_COLUMNS})
+    atomic_write(path, write)
 
 
 def append_score_entry(clinical_dir: Path, entry: dict) -> None:
@@ -160,6 +165,22 @@ def append_score_entry(clinical_dir: Path, entry: dict) -> None:
     else:
         rows.append(new_row)
     _write_rows(path, rows)
+
+
+def remove_score_entry(clinical_dir: Path, case_id: str, video_id_annot: str,
+                       hogg_var: str, rater: str) -> bool:
+    """Deletes the row matching (video_id_annot, hogg_var, rater) from the
+    case's score file, e.g. when a score is set back to blank. Returns
+    True if a row was removed."""
+    path = score_entries_path(clinical_dir, case_id)
+    rows = _read_rows(path)
+    key = (str(video_id_annot), str(hogg_var), str(rater))
+    kept = [r for r in rows
+            if tuple(str(r.get(f, "")) for f in _UPSERT_KEY_FIELDS) != key]
+    if len(kept) == len(rows):
+        return False
+    _write_rows(path, kept)
+    return True
 
 
 def get_score_value(clinical_dir: Path, case_id: str, video_id_annot: str,
@@ -186,12 +207,12 @@ def load_score_entries(clinical_dir: Path, case_id: Optional[str] = None) -> pd.
         path = score_entries_path(clinical_dir, case_id)
         if not path.exists():
             return pd.DataFrame(columns=SCORE_ENTRIES_COLUMNS)
-        return pd.read_csv(path)
+        return read_locked_aware(path, lambda: pd.read_csv(path))
 
     frames = []
     for path in all_score_entry_files(clinical_dir):
         try:
-            frames.append(pd.read_csv(path))
+            frames.append(read_locked_aware(path, lambda p=path: pd.read_csv(p)))
         except pd.errors.EmptyDataError:
             continue
     if not frames:

@@ -34,6 +34,7 @@ import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
 from core.config import EVENT_TYPES, MAX_EVENT_PAIRS
+from io_utils.safe_io import atomic_write, read_locked_aware
 
 ANNOTATIONS_SHEET = "Annotations"
 LISTS_SHEET = "Lists"
@@ -124,14 +125,15 @@ def _new_workbook(bodypart_events: list[str] = EVENT_TYPES) -> openpyxl.Workbook
 
 def load_or_create(xlsx_path: Path) -> openpyxl.Workbook:
     if xlsx_path.exists():
-        return openpyxl.load_workbook(xlsx_path)
+        return read_locked_aware(xlsx_path, lambda: openpyxl.load_workbook(xlsx_path))
     return _new_workbook()
 
 
 def read_rows(xlsx_path: Path) -> list[StitchRow]:
     if not xlsx_path.exists():
         return []
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    wb = read_locked_aware(xlsx_path,
+                           lambda: openpyxl.load_workbook(xlsx_path, data_only=True))
     if ANNOTATIONS_SHEET not in wb.sheetnames:
         return []
     ws = wb[ANNOTATIONS_SHEET]
@@ -199,8 +201,7 @@ def upsert_row(xlsx_path: Path, new_row: StitchRow) -> None:
         ws.cell(row=target_row_idx, column=col + 1, value=ev)
         col += 2
 
-    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(xlsx_path)
+    atomic_write(xlsx_path, lambda tmp: wb.save(tmp))
 
 
 # ---------------------------------------------------------------------------

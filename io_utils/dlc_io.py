@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import NEEDLE_BODYPARTS
+from io_utils.safe_io import atomic_write, read_locked_aware
 
 
 def collected_data_path(labeled_data_root: Path, scorer: str) -> Path:
@@ -44,8 +45,10 @@ def read_collected_data(
     x/y are None if the keypoint wasn't labeled on that frame."""
     if not csv_path.exists():
         return list(NEEDLE_BODYPARTS), {}
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        rows = list(csv.reader(f))
+    def read() -> list[list[str]]:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            return list(csv.reader(f))
+    rows = read_locked_aware(csv_path, read)
     if len(rows) < 3:
         return list(NEEDLE_BODYPARTS), {}
     bp_row = rows[1][3:]
@@ -88,9 +91,10 @@ def write_collected_data(
             row.append("" if x is None else repr(float(x)))
             row.append("" if y is None else repr(float(y)))
         rows.append(row)
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerows(rows)
+    def write(tmp: Path) -> None:
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+    atomic_write(csv_path, write)
 
 
 def upsert_frame(

@@ -35,6 +35,7 @@ from core.project import ProjectManager
 from io_utils import dlc_io
 from widgets.video_widget import VideoPlayerWidget, ms_to_timecode
 from widgets.keypoint_canvas import KeypointCanvas
+from widgets.save_guard import run_save
 
 
 class KeypointTab(QWidget):
@@ -232,15 +233,28 @@ class KeypointTab(QWidget):
         # load existing keypoints for this frame if already labeled
         scorer = self.scorer_edit.text().strip() or DEFAULT_SCORER
         csv_path = self._csv_path()
-        _, data = dlc_io.read_collected_data(csv_path)
+        try:
+            _, data = dlc_io.read_collected_data(csv_path)
+        except OSError as e:
+            # no dialog here: this runs on every frame while scrubbing
+            self._clear_points_without_autosave()
+            self.status_label.setText(f"\u26a0 Can't read the labels: {e}")
+            return
         key = (self._video_folder_name(), self._image_name(idx))
         existing = data.get(key)
         if existing:
             self.canvas.set_points(existing)
             self.status_label.setText(f"Frame {idx}: previously labeled ({scorer})")
         else:
-            self.canvas.clear_points()
+            self._clear_points_without_autosave()
             self.status_label.setText(f"Frame {idx}: not yet labeled")
+
+    def _clear_points_without_autosave(self) -> None:
+        """Clearing the canvas to show a new frame is a load, not an edit,
+        so it mustn't trigger an autosave (the Clear points button still does)."""
+        self.canvas.blockSignals(True)
+        self.canvas.clear_points()
+        self.canvas.blockSignals(False)
 
     def _write_current_frame(self) -> tuple[bool, int, int]:
         """Writes the current canvas points for the current frame to disk.
@@ -254,27 +268,34 @@ class KeypointTab(QWidget):
         n_total = len(points)
         n_placed = sum(1 for v in points.values() if v is not None)
         folder = self._video_folder_name()
-        image_name = self._image_name(self.player.current_frame)
+        frame_idx = self.player.current_frame
+        image_name = self._image_name(frame_idx)
         csv_path = self._csv_path()
-        _, existing_data = dlc_io.read_collected_data(csv_path)
-        already_has_entry = (folder, image_name) in existing_data
-        if n_placed == 0 and not already_has_entry:
-            return False, n_placed, n_total
-
-        img_dir = self.pm.paths.labeled_data / folder
-        img_dir.mkdir(parents=True, exist_ok=True)
-        img_path = img_dir / image_name
-        if not img_path.exists():
-            frame = self.player.current_frame_bgr()
-            if frame is not None:
-                cv2.imwrite(str(img_path), frame)
-
         scorer = self.scorer_edit.text().strip() or DEFAULT_SCORER
-        dlc_io.upsert_frame(
-            csv_path, scorer, self._active_bodyparts(), folder, image_name, points
-        )
-        self._refresh_labeled_list()
-        return True, n_placed, n_total
+        wrote = {"value": False}
+
+        def save() -> None:
+            _, existing_data = dlc_io.read_collected_data(csv_path)
+            if n_placed == 0 and (folder, image_name) not in existing_data:
+                return  # nothing placed and nothing saved before: no empty rows
+            img_dir = self.pm.paths.labeled_data / folder
+            img_dir.mkdir(parents=True, exist_ok=True)
+            img_path = img_dir / image_name
+            if not img_path.exists():
+                frame = self.player.current_frame_bgr()
+                if frame is not None and not cv2.imwrite(str(img_path), frame):
+                    raise OSError(f"Couldn't write the frame image {img_path}")
+            dlc_io.upsert_frame(
+                csv_path, scorer, self._active_bodyparts(), folder, image_name, points
+            )
+            wrote["value"] = True
+
+        if not run_save(self, f"Keypoints for frame {frame_idx}", save):
+            self.status_label.setText(f"Frame {frame_idx}: \u2717 keypoints NOT saved")
+            return None, n_placed, n_total
+        if wrote["value"]:
+            self._refresh_labeled_list()
+        return wrote["value"], n_placed, n_total
 
     def _autosave_current_frame(self) -> None:
         """Called automatically on every keypoint edit (place/drag/delete/
@@ -293,6 +314,8 @@ class KeypointTab(QWidget):
             QMessageBox.warning(self, "No clip loaded", "Select a case and stitch clip first.")
             return
         wrote, n_placed, n_total = self._write_current_frame()
+        if wrote is None:
+            return  # save failed; status line already says so
         if not wrote:
             QMessageBox.warning(self, "Nothing to save", "Place at least one keypoint first.")
             return
@@ -303,7 +326,11 @@ class KeypointTab(QWidget):
     def _refresh_labeled_list(self) -> None:
         self.labeled_list.clear()
         csv_path = self._csv_path()
-        _, data = dlc_io.read_collected_data(csv_path)
+        try:
+            _, data = dlc_io.read_collected_data(csv_path)
+        except OSError as e:
+            self.labeled_list.addItem(f"\u26a0 Can't read the labels: {e}")
+            return
         folder = self._video_folder_name()
         for (f, image), kp in sorted(data.items()):
             if f != folder:
