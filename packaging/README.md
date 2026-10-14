@@ -40,9 +40,11 @@ resources/ffmpeg/windows/ffmpeg.exe  resources/ffmpeg/windows/ffprobe.exe
 ```
 
 Trusted sources for static (no-install-needed) builds:
-- **macOS**: https://evermeet.cx/ffmpeg/ (separate downloads for `ffmpeg`
-  and `ffprobe`; after downloading, run
-  `chmod +x resources/ffmpeg/mac/ffmpeg resources/ffmpeg/mac/ffprobe`)
+- **macOS**: https://ffmpeg.martin-riedl.de/ (separate `ffmpeg` and
+  `ffprobe` zips; pick **arm64** for Apple Silicon or **amd64** for Intel
+  to match the Mac you build on; after unzipping, run
+  `chmod +x resources/ffmpeg/mac/ffmpeg resources/ffmpeg/mac/ffprobe`).
+  evermeet.cx, used before, no longer serves downloads.
 - **Windows**: https://www.gyan.dev/ffmpeg/builds/ (grab the "release
   essentials" build, then copy `bin/ffmpeg.exe` and `bin/ffprobe.exe`)
 
@@ -64,9 +66,12 @@ Output goes to `dist/Surgical Annotation Studio/`. On macOS this includes
 a `Surgical Annotation Studio.app` you can drag into `/Applications`; on
 Windows, `Surgical Annotation Studio.exe` inside that folder.
 
-Zip the whole `dist/Surgical Annotation Studio/` folder to share it --
-everything the app needs (including bundled ffmpeg, if you added it) is
-inside.
+To share it on Windows, zip the whole `dist/Surgical Annotation Studio/`
+folder: everything the app needs is inside, including bundled ffmpeg if
+you added it. Name the zip after the version, e.g.
+`SurgicalAnnotationStudio-v1.2-windows.zip`. The version also appears in
+the app's window title; it's set in `core/version.py`, so update it
+before building a new release.
 
 ## 4. (Optional) App icon
 
@@ -74,23 +79,45 @@ Drop an icon at `packaging/mac/icon.icns` (macOS) or
 `packaging/windows/icon.ico` (Windows) before building and it'll be picked
 up automatically.
 
-## Building automatically with GitHub Actions
+## macOS builds with GitHub Actions
 
-`.github/workflows/build.yml` builds both a macOS and a Windows package on
-every push of a version tag (e.g. `git tag v1.0 && git push --tags`), or
-manually via the "Run workflow" button on GitHub's Actions tab. It does
-**not** bundle ffmpeg (fetching a specific static build reliably in CI is
-brittle since download URLs change) -- if you want a self-contained build
-from CI, edit the workflow to download and place the binaries under
-`resources/ffmpeg/<platform>/` before the build step, using the sources
-above.
+A Mac app has to be built on a Mac, so `.github/workflows/build.yml` builds
+it on GitHub's Mac machines. There are two builds, **Apple Silicon** (M1
+and later) and **Intel**, and each one:
+1. downloads the matching static ffmpeg/ffprobe (and signs them, since
+   Apple Silicon refuses unsigned programs),
+2. runs `packaging/build.py`,
+3. checks that the app starts and that its bundled ffmpeg runs, and
+4. zips `Surgical Annotation Studio.app` as
+   `SurgicalAnnotationStudio-<tag>-macos-apple-silicon.zip` / `...-intel.zip`.
+
+It runs when a version tag is pushed (`git tag v1.2 && git push origin
+v1.2`) and attaches both zips to a **draft** release for that tag. Add the
+Windows zip and the release notes to the draft, then publish it. Wait
+for the workflow to finish before creating the release yourself, or the
+zips land on a second draft. The workflow can also be run by hand from the
+Actions tab ("Run workflow"); the zips are then under that run's
+Artifacts.
+
+**Mac users opening the app the first time:** it isn't signed with an
+Apple developer certificate, so macOS blocks it.
+1. Unzip it and move `Surgical Annotation Studio.app` to Applications.
+2. Double-click it; macOS refuses to open it.
+3. Open System Settings → Privacy & Security, scroll down and click
+   **Open Anyway** next to the app's name.
+
+If video import or cutting then reports ffmpeg as missing or blocked, run
+this once in Terminal:
+`xattr -dr com.apple.quarantine "/Applications/Surgical Annotation Studio.app"`
 
 ## Known limitations
 
 - PyInstaller builds are OS-specific: build on a Mac for macOS, on Windows
   for Windows. There's no cross-compiling.
-- Antivirus/Gatekeeper: unsigned builds may get flagged by Windows
-  Defender SmartScreen or macOS Gatekeeper on first run. Users can bypass
-  this (Windows: "More info" -> "Run anyway"; macOS: right-click -> Open),
-  but for wider distribution you'd want a code-signing certificate for
-  each OS -- out of scope here.
+- Antivirus/Gatekeeper: unsigned builds get flagged by Windows Defender
+  SmartScreen or macOS Gatekeeper on first run. Users can bypass this
+  (Windows: "More info" -> "Run anyway"; macOS: see above), but for wider
+  distribution you'd want a code-signing certificate for each OS -- out of
+  scope here.
+- The Mac builds are made and checked on GitHub's Mac machines only; they
+  haven't been tried on a lab Mac yet.

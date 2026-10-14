@@ -1,60 +1,98 @@
-name: Build desktop app
+name: Build macOS app
 
-# Builds a standalone macOS and Windows package with PyInstaller.
-# Triggers on pushing a version tag (e.g. `git tag v1.0 && git push --tags`)
-# or manually from the Actions tab ("Run workflow").
+# Builds the macOS app with PyInstaller on GitHub's Mac machines (a Mac app
+# can't be built on Windows): one build for Apple Silicon, one for Intel
+# Macs, each with ffmpeg/ffprobe bundled. Windows builds are made locally --
+# see packaging/README.md.
 #
-# NOTE: this workflow does NOT bundle ffmpeg (see packaging/README.md for
-# why) -- the built apps will require ffmpeg to be installed separately on
-# whatever machine runs them, unless you add a step here to download
-# static binaries into resources/ffmpeg/<platform>/ before the build step.
+# Pushing a version tag (git tag v1.2 && git push origin v1.2) attaches the
+# zips to a DRAFT release for that tag: add the Windows zip and release
+# notes there, then publish. "Run workflow" on the Actions tab just builds
+# the zips (downloadable from the run's Artifacts).
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    tags: ["v*"]
   workflow_dispatch: {}
 
+permissions:
+  contents: write   # to create the draft release
+
 jobs:
-  build:
+  macos:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            platform_name: mac
-          - os: windows-latest
-            platform_name: windows
-    runs-on: ${{ matrix.os }}
+          - runner: macos-latest      # Apple Silicon (M1 and later)
+            arch: arm64
+            label: apple-silicon
+          - runner: macos-15-intel    # Intel Macs
+            arch: amd64
+            label: intel
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-build.txt
 
+      - name: Download static ffmpeg + ffprobe (${{ matrix.arch }})
+        # evermeet.cx (the old source) is gone; martin-riedl.de publishes
+        # static macOS builds for both architectures
+        run: |
+          mkdir -p resources/ffmpeg/mac
+          cd resources/ffmpeg/mac
+          for tool in ffmpeg ffprobe; do
+            curl -fsSL -o "$tool.zip" \
+              "https://ffmpeg.martin-riedl.de/redirect/latest/macos/${{ matrix.arch }}/release/$tool.zip"
+            unzip -o -q "$tool.zip" && rm "$tool.zip"
+            chmod +x "$tool"
+            xattr -c "$tool" || true
+            codesign --force --sign - "$tool"   # Apple Silicon won't run unsigned binaries
+            file "$tool"
+            "./$tool" -version | head -1
+          done
+
       - name: Build with PyInstaller
         run: python packaging/build.py
 
-      - name: Zip build output
-        shell: bash
+      - name: Check the app starts and its ffmpeg runs
         run: |
-          cd dist
-          zip -r "../Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip" "Surgical Annotation Studio"
+          APP="dist/Surgical Annotation Studio.app"
+          find "$APP" -path '*resources/ffmpeg/mac/ffmpeg' -type f -exec {} -version \; | head -1
+          PROJECT="$(mktemp -d)/smoke"
+          python -c "import sys; sys.path.insert(0, '.'); from pathlib import Path; from core.project import ProjectManager; ProjectManager.create(Path(sys.argv[1]))" "$PROJECT"
+          QT_QPA_PLATFORM=offscreen "$APP/Contents/MacOS/Surgical Annotation Studio" "$PROJECT" &
+          PID=$!
+          sleep 15
+          kill -0 "$PID" && echo "app still running after 15 s: OK"
+          kill "$PID"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Zip the app
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="$GITHUB_REF_NAME"; else VERSION="dev-${GITHUB_SHA::7}"; fi
+          ZIP="SurgicalAnnotationStudio-${VERSION}-macos-${{ matrix.label }}.zip"
+          # ditto keeps the .app's symlinks and signatures intact (zip -r doesn't)
+          ditto -c -k --keepParent "dist/Surgical Annotation Studio.app" "$ZIP"
+          ls -lh "$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: Surgical-Annotation-Studio-${{ matrix.platform_name }}
-          path: Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip
+          name: ${{ env.ZIP }}
+          path: ${{ env.ZIP }}
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach to draft release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: Surgical-Annotation-Studio-${{ matrix.platform_name }}.zip
+          draft: true
+          files: ${{ env.ZIP }}
