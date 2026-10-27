@@ -17,16 +17,24 @@ import os
 import sys
 from pathlib import Path
 
-# On Linux, Qt may use the XCB backend even when no real display is available,
-# and the xcb-cursor library is often missing in slim/container images. Fall
-# back to the offscreen backend in those cases so the app still launches.
-# Windows and macOS never set DISPLAY, so this must stay Linux-only or the
-# app would silently run headless there.
+# Linux only (Windows and macOS never set DISPLAY, so this would make the app
+# silently headless there):
+# - no display at all (container, SSH): use the offscreen backend.
+# - a desktop, but Qt's X11 backend needs libxcb-cursor0, which Ubuntu often
+#   lacks: use Wayland if the session has it, otherwise say what to install
+#   (falling back to offscreen here would run the app invisibly).
 if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORM"):
-    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    has_x11 = bool(os.environ.get("DISPLAY"))
+    has_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
     has_xcb_cursor = ctypes.util.find_library("xcb-cursor") is not None
-    if not has_display or not has_xcb_cursor:
+    if not has_x11 and not has_wayland:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    elif not has_xcb_cursor:
+        if has_wayland:
+            os.environ["QT_QPA_PLATFORM"] = "wayland"
+        else:
+            print("Surgical Annotation Studio needs the libxcb-cursor0 package on X11:\n"
+                  "    sudo apt install libxcb-cursor0", file=sys.stderr)
 from PySide6.QtWidgets import QApplication
 
 from core.project import ProjectManager

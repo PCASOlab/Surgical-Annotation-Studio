@@ -9,8 +9,24 @@ Procedures:
 - Pancreaticojejunostomy (Whipple) - OSATS/RSS/PJ + stitch-level
 - Paraesophageal Hernia (PEH) - OSATS/RSS/GEARS + stitch-level
 
-Built and most tested on Linux; also runs on macOS and Windows with
-ffmpeg installed.
+Runs on Windows, macOS and Linux (Ubuntu 22.04 and newer).
+
+**Ready-made downloads** (no Python or ffmpeg needed) are on the
+[Releases page](https://github.com/PCASOlab/Surgical-Annotation-Studio/releases):
+- **Windows:** unzip the `-windows.zip` and run `Surgical Annotation Studio.exe`.
+- **macOS:** use the `-macos-apple-silicon.zip` (M1 or newer) or the
+  `-macos-intel.zip`. To open it the first time, see
+  [`packaging/README.md`](packaging/README.md#macos-and-linux-builds-with-github-actions).
+- **Ubuntu / Linux:** unpack the `-linux-x86_64.tar.gz`, then:
+  ```bash
+  tar -xzf SurgicalAnnotationStudio-v*-linux-x86_64.tar.gz
+  cd SurgicalAnnotationStudio-v*-linux-x86_64
+  sudo apt install libxcb-cursor0          # once; Qt needs it on X11
+  ./"Surgical Annotation Studio"           # or: ./install-desktop-entry.sh
+  ```
+  `install-desktop-entry.sh` adds the app to the applications menu.
+
+To run from the source code instead, follow the sections below.
 
 ---
 
@@ -398,8 +414,8 @@ picks up the change automatically.
 
 Want to share this with someone who doesn't have Python installed? See
 [`packaging/README.md`](packaging/README.md) to build a double-clickable
-`.app` (macOS) or `.exe` (Windows) with PyInstaller -- including how to
-have GitHub build both automatically for you. Set up the venv with
+`.exe` (Windows), `.app` (macOS) or Linux package with PyInstaller --
+including how GitHub builds the macOS and Linux ones automatically. Set up the venv with
 `py setup_venv.py --build` (Windows) or `python3 setup_venv.py --build`
 to get the packaging tools too.
 

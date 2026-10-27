@@ -1,18 +1,22 @@
-name: Build macOS app
+name: Build macOS and Linux apps
 
-# Builds the macOS app with PyInstaller on GitHub's Mac machines (a Mac app
-# can't be built on Windows): one build for Apple Silicon, one for Intel
-# Macs, each with ffmpeg/ffprobe bundled. Windows builds are made locally --
-# see packaging/README.md.
+# Builds the app with PyInstaller on GitHub's machines, with ffmpeg/ffprobe
+# bundled (a Mac or Linux app can't be built on Windows):
+#   - macOS: Apple Silicon and Intel (.app in a zip)
+#   - Linux: x86_64, built on Ubuntu 22.04 so it runs on 22.04 and newer
+#     (folder in a .tar.gz)
+# Windows builds are made locally -- see packaging/README.md.
 #
-# Pushing a version tag (git tag v1.2 && git push origin v1.2) attaches the
-# zips to a DRAFT release for that tag: add the Windows zip and release
-# notes there, then publish. "Run workflow" on the Actions tab just builds
-# the zips (downloadable from the run's Artifacts).
+# Pushing a version tag (git tag v1.3 && git push origin v1.3) attaches the
+# packages to a DRAFT release for that tag: add the Windows zip and release
+# notes there, then publish. Pushes to dev, and "Run workflow" on the Actions
+# tab, only build (packages are under the run's Artifacts) -- a check that
+# the builds still work before tagging.
 
 on:
   push:
     tags: ["v*"]
+    branches: [dev]
   workflow_dispatch: {}
 
 permissions:
@@ -67,7 +71,8 @@ jobs:
       - name: Check the app starts and its ffmpeg runs
         run: |
           APP="dist/Surgical Annotation Studio.app"
-          find "$APP" -path '*resources/ffmpeg/mac/ffmpeg' -type f -exec {} -version \; | head -1
+          FFMPEG="$(find "$APP" -path '*resources/ffmpeg/mac/ffmpeg' -type f | head -1)"
+          test -n "$FFMPEG" && "$FFMPEG" -version | head -1
           PROJECT="$(mktemp -d)/smoke"
           python -c "import sys; sys.path.insert(0, '.'); from pathlib import Path; from core.project import ProjectManager; ProjectManager.create(Path(sys.argv[1]))" "$PROJECT"
           QT_QPA_PLATFORM=offscreen "$APP/Contents/MacOS/Surgical Annotation Studio" "$PROJECT" &
@@ -83,16 +88,88 @@ jobs:
           # ditto keeps the .app's symlinks and signatures intact (zip -r doesn't)
           ditto -c -k --keepParent "dist/Surgical Annotation Studio.app" "$ZIP"
           ls -lh "$ZIP"
-          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "PKG=$ZIP" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP }}
-          path: ${{ env.ZIP }}
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}
 
       - name: Attach to draft release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: ${{ env.ZIP }}
+          files: ${{ env.PKG }}
+
+  linux:
+    # the oldest Ubuntu we support: PyInstaller apps run on the glibc they
+    # were built with and newer, so this build runs on Ubuntu 22.04+
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt's system libraries (for the startup check)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Download static ffmpeg + ffprobe (x86_64)
+        run: |
+          mkdir -p resources/ffmpeg/linux
+          cd resources/ffmpeg/linux
+          curl -fsSL -o ffmpeg.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          tar -xJf ffmpeg.tar.xz --strip-components=1 --wildcards '*/ffmpeg' '*/ffprobe'
+          rm ffmpeg.tar.xz
+          chmod +x ffmpeg ffprobe
+          ./ffmpeg -version | head -1
+
+      - name: Build with PyInstaller
+        run: python packaging/build.py
+
+      - name: Check the app starts and its ffmpeg runs
+        run: |
+          APPDIR="dist/Surgical Annotation Studio"
+          FFMPEG="$(find "$APPDIR" -path '*resources/ffmpeg/linux/ffmpeg' -type f | head -1)"
+          test -n "$FFMPEG" && "$FFMPEG" -version | head -1
+          PROJECT="$(mktemp -d)/smoke"
+          python -c "import sys; sys.path.insert(0, '.'); from pathlib import Path; from core.project import ProjectManager; ProjectManager.create(Path(sys.argv[1]))" "$PROJECT"
+          QT_QPA_PLATFORM=offscreen "$APPDIR/Surgical Annotation Studio" "$PROJECT" &
+          PID=$!
+          sleep 15
+          kill -0 "$PID" && echo "app still running after 15 s: OK"
+          kill "$PID"
+
+      - name: Package as .tar.gz
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="$GITHUB_REF_NAME"; else VERSION="dev-${GITHUB_SHA::7}"; fi
+          NAME="SurgicalAnnotationStudio-${VERSION}-linux-x86_64"
+          mv "dist/Surgical Annotation Studio" "dist/$NAME"
+          cp packaging/linux/install-desktop-entry.sh "dist/$NAME/"
+          chmod +x "dist/$NAME/install-desktop-entry.sh"
+          tar -C dist -czf "$NAME.tar.gz" "$NAME"
+          ls -lh "$NAME.tar.gz"
+          echo "PKG=$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}
+
+      - name: Attach to draft release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: ${{ env.PKG }}

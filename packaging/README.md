@@ -37,6 +37,7 @@ build and drop the binaries in:
 ```
 resources/ffmpeg/mac/ffmpeg          resources/ffmpeg/mac/ffprobe
 resources/ffmpeg/windows/ffmpeg.exe  resources/ffmpeg/windows/ffprobe.exe
+resources/ffmpeg/linux/ffmpeg        resources/ffmpeg/linux/ffprobe
 ```
 
 Trusted sources for static (no-install-needed) builds:
@@ -47,6 +48,8 @@ Trusted sources for static (no-install-needed) builds:
   evermeet.cx, used before, no longer serves downloads.
 - **Windows**: https://www.gyan.dev/ffmpeg/builds/ (grab the "release
   essentials" build, then copy `bin/ffmpeg.exe` and `bin/ffprobe.exe`)
+- **Linux**: https://johnvansickle.com/ffmpeg/ (the "release" amd64
+  static build; copy `ffmpeg` and `ffprobe` out of the archive)
 
 These binaries are only used at build time (`--add-data` bundles them into
 `dist/`) -- don't commit them to git, they're large and this repo's
@@ -79,25 +82,38 @@ Drop an icon at `packaging/mac/icon.icns` (macOS) or
 `packaging/windows/icon.ico` (Windows) before building and it'll be picked
 up automatically.
 
-## macOS builds with GitHub Actions
+## macOS and Linux builds with GitHub Actions
 
-A Mac app has to be built on a Mac, so `.github/workflows/build.yml` builds
-it on GitHub's Mac machines. There are two builds, **Apple Silicon** (M1
-and later) and **Intel**, and each one:
-1. downloads the matching static ffmpeg/ffprobe (and signs them, since
-   Apple Silicon refuses unsigned programs),
+A Mac or Linux app has to be built on that OS, so
+`.github/workflows/build.yml` builds them on GitHub's machines:
+- **macOS, Apple Silicon** (M1 and later) and **macOS, Intel**:
+  `SurgicalAnnotationStudio-<tag>-macos-apple-silicon.zip` / `...-intel.zip`
+  containing `Surgical Annotation Studio.app`.
+- **Linux x86_64**, built on Ubuntu 22.04 so it runs on 22.04 and newer:
+  `SurgicalAnnotationStudio-<tag>-linux-x86_64.tar.gz`, a folder with the
+  program and `install-desktop-entry.sh`, which adds it to the
+  applications menu.
+
+Each build:
+1. downloads the matching static ffmpeg/ffprobe (on macOS also signing
+   them, since Apple Silicon refuses unsigned programs),
 2. runs `packaging/build.py`,
 3. checks that the app starts and that its bundled ffmpeg runs, and
-4. zips `Surgical Annotation Studio.app` as
-   `SurgicalAnnotationStudio-<tag>-macos-apple-silicon.zip` / `...-intel.zip`.
+4. packs the result.
 
-It runs when a version tag is pushed (`git tag v1.2 && git push origin
-v1.2`) and attaches both zips to a **draft** release for that tag. Add the
+When a version tag is pushed (`git tag v1.3 && git push origin v1.3`), the
+packages are attached to a **draft** release for that tag. Add the
 Windows zip and the release notes to the draft, then publish it. Wait
 for the workflow to finish before creating the release yourself, or the
-zips land on a second draft. The workflow can also be run by hand from the
-Actions tab ("Run workflow"); the zips are then under that run's
-Artifacts.
+packages land on a second draft. Every push to `dev` also runs the builds
+as a check, and so does "Run workflow" on the Actions tab; the packages are
+then under that run's Artifacts.
+
+**Linux users:** unpack the `.tar.gz` and run `./"Surgical Annotation
+Studio"` inside the folder, or run `./install-desktop-entry.sh` once to add
+it to the applications menu. On X11 desktops Qt needs one system library,
+installed once with `sudo apt install libxcb-cursor0`; the app prints this
+command if it's missing.
 
 **Mac users opening the app the first time:** it isn't signed with an
 Apple developer certificate, so macOS blocks it.
@@ -119,5 +135,5 @@ this once in Terminal:
   (Windows: "More info" -> "Run anyway"; macOS: see above), but for wider
   distribution you'd want a code-signing certificate for each OS -- out of
   scope here.
-- The Mac builds are made and checked on GitHub's Mac machines only; they
-  haven't been tried on a lab Mac yet.
+- The Mac and Linux builds are made and checked on GitHub's machines
+  only; they haven't been tried on a lab computer yet.

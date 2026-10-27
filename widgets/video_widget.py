@@ -36,6 +36,40 @@ MAX_ZOOM = 8.0
 DEFAULT_VIDEO_MIN_HEIGHT = 480
 
 
+def open_video(path: Path) -> cv2.VideoCapture:
+    """Open with OpenCV's bundled FFmpeg reader on every OS. Left to choose,
+    OpenCV may use GStreamer (Ubuntu's apt python3-opencv) or AVFoundation
+    (macOS), which overestimate the frame count of MP4s and seek imprecisely
+    -- seen as frozen frames at the end of clips."""
+    cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(str(path))  # OpenCV built without FFmpeg
+    return cap
+
+
+def last_readable_frame(cap: cv2.VideoCapture, reported: int) -> int:
+    """Index of the last frame that really decodes. The reported count can be
+    too high (container durations, audio longer than video); the frames past
+    the real end would otherwise show the last picture frozen."""
+    def readable(i: int) -> bool:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        return bool(cap.read()[0])
+
+    last = reported - 1
+    if last < 0 or readable(last):
+        return last
+    lo, hi = 0, last  # readable(lo) assumed, readable(hi) false
+    if not readable(0):
+        return -1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if readable(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def ms_to_timecode(ms: float) -> str:
     """HH:MM:SS.hh -- the app-wide display format (see core/timefmt.py)."""
     return format_timecode(ms / 1000.0)
@@ -104,6 +138,7 @@ class VideoPlayerWidget(QWidget):
                  show_zoom_controls: bool = True):
         super().__init__(parent)
         self._cap: Optional[cv2.VideoCapture] = None
+        self._next_read = -1  # frame index the capture will return on read()
         self._path: Optional[Path] = None
         self._fps: float = 30.0
         self._nframes: int = 0
@@ -236,14 +271,16 @@ class VideoPlayerWidget(QWidget):
     def load(self, path: Path) -> bool:
         if self._cap is not None:
             self._cap.release()
-        self._cap = cv2.VideoCapture(str(path))
+        self._cap = open_video(path)
         if not self._cap.isOpened():
             self.video_label.setText(f"Failed to open:\n{path}")
             self._cap = None
             return False
         self._path = path
         self._fps = self._cap.get(cv2.CAP_PROP_FPS) or 30.0
-        self._nframes = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        reported = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._nframes = last_readable_frame(self._cap, reported) + 1
+        self._next_read = -1  # position unknown after the check above
         self.slider.setRange(0, max(0, self._nframes - 1))
         self.frame_spin.setRange(0, max(0, self._nframes - 1))
         self._apply_timeline_ranges()  # fps may differ from the previous video
@@ -280,8 +317,16 @@ class VideoPlayerWidget(QWidget):
         DLC keypoint frame export)."""
         if self._cap is None:
             return None
-        self._cap.set(cv2.CAP_PROP_POS_FRAMES, self._cur_frame)
+        return self._read_frame(self._cur_frame)
+
+    def _read_frame(self, idx: int) -> Optional[np.ndarray]:
+        """Frame `idx`; reads straight on when it's the next one (playback,
+        stepping) instead of seeking, which is faster and never lands on a
+        neighbouring frame."""
+        if idx != self._next_read:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = self._cap.read()
+        self._next_read = idx + 1 if ok else -1
         return frame if ok else None
 
     def set_display_visible(self, visible: bool) -> None:
@@ -337,9 +382,8 @@ class VideoPlayerWidget(QWidget):
             return
         idx = max(0, min(idx, self._nframes - 1)) if self._nframes else max(0, idx)
         self._cur_frame = idx
-        self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, frame = self._cap.read()
-        if ok:
+        frame = self._read_frame(idx)
+        if frame is not None:
             self._display(frame)
         self.slider.blockSignals(True)
         self.slider.setValue(idx)
