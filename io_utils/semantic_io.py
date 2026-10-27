@@ -56,6 +56,61 @@ QUALITY_CHECK_TEXT = [
 TIME_NUMBER_FORMAT = "hh:mm:ss.00"
 
 
+# Stitch rows have been named two ways: the lab's original files use the
+# short stitch ID ("stitch_12", with the video name in the `file` column);
+# since clips are named <case_id>_<stitch_id>, the app writes the clip name
+# ("<case_id>_stitch_12"). Rows are matched on the short form so both load.
+CLIP_ID_PREFIXES = ("stitch_", "knot_")
+
+
+def stitch_key(pcaso_var, *names) -> str:
+    """Short stitch ID: 'stitch_12' for 'stitch_12', '<case>_stitch_12' or
+    '<video name>_stitch_12'. `names` are prefixes to strip (case ID, the
+    row's `file` value; the longest that matches); then anything still in
+    front of the last '_stitch_' / '_knot_' is dropped (a video name can
+    start with the case ID, so stripping the case alone isn't enough)."""
+    v = str(pcaso_var or "").strip()
+    for name in sorted((str(n or "").strip() for n in names), key=len, reverse=True):
+        if name and v.startswith(name + "_"):
+            v = v[len(name) + 1:]
+            break
+    cut = max(v.rfind("_" + prefix) for prefix in CLIP_ID_PREFIXES)
+    return v[cut + 1:] if cut >= 0 else v
+
+
+def find_stitch_row(rows: list["StitchRow"], stitch_id: str,
+                    case_id: str = "") -> Optional["StitchRow"]:
+    """The row for `stitch_id` (a clip name): an exact pcaso_var match if
+    there is one, else a row naming the same stitch the other way."""
+    exact = next((r for r in rows if r.pcaso_var == stitch_id), None)
+    if exact is not None:
+        return exact
+    key = stitch_key(stitch_id, case_id)
+    return next((r for r in rows if stitch_key(r.pcaso_var, r.file, case_id) == key), None)
+
+
+def events_are_clip_relative(row: "StitchRow") -> bool:
+    """Event times have been stored two ways: the lab's original files hold
+    them relative to the clip (0 = clip start), the app writes them in the
+    original video's timebase (like `start`/`stop`). Decide per row from
+    where the events fall: inside [start, stop] -> video time; inside
+    [0, clip length] -> clip time. When both fit (a clip near the start of
+    the video), video time is assumed, the app's own convention."""
+    times = [time_to_seconds(t) for t, _ in row.sorted_events()]
+    times = [t for t in times if t is not None]
+    start, stop = time_to_seconds(row.start), time_to_seconds(row.stop)
+    if not times or start is None or stop is None or start <= 0:
+        return False
+    slack = 0.5
+    if all(start - slack <= t <= stop + slack for t in times):
+        return False
+    return all(-slack <= t <= (stop - start) + slack for t in times)
+
+
+def find_row_in_file(xlsx_path: Path, stitch_id: str, case_id: str = "") -> Optional["StitchRow"]:
+    return find_stitch_row(read_rows(xlsx_path), stitch_id, case_id) if xlsx_path.exists() else None
+
+
 def _clear_row_cells(ws: Worksheet, row_idx: int) -> None:
     """Remove any existing cells from a row so rewritten data cannot leave
     stale values behind when the new row is shorter than the old one."""
@@ -172,6 +227,20 @@ def upsert_row(xlsx_path: Path, new_row: StitchRow) -> None:
            ws.cell(row=r, column=2).value == new_row.pcaso_var:
             target_row_idx = r
             break
+    if target_row_idx is None:
+        # the same stitch saved under its other name (short "stitch_12" in
+        # older files): update that row, keeping its file/pcaso_var values so
+        # existing data isn't renamed
+        key = stitch_key(new_row.pcaso_var, new_row.file)
+        for r in range(2, ws.max_row + 1):
+            file_val = ws.cell(row=r, column=1).value
+            var_val = ws.cell(row=r, column=2).value
+            if var_val and stitch_key(var_val, file_val, new_row.file) == key:
+                target_row_idx = r
+                new_row = StitchRow(file=file_val, pcaso_var=var_val, start=new_row.start,
+                                    stop=new_row.stop, comments=new_row.comments,
+                                    events=new_row.events)
+                break
     if target_row_idx is None:
         target_row_idx = ws.max_row + 1 if ws.cell(row=ws.max_row, column=1).value else ws.max_row
 
@@ -340,9 +409,8 @@ def find_existing_stitch_timing(
     if not semantic_dir.exists():
         return None
     for path in sorted(semantic_dir.glob(f"{case_id}_PJ_d2m_semantic_*.xlsx")):
-        for row in read_rows(path):
-            if row.pcaso_var != stitch_id:
-                continue
+        row = find_stitch_row(read_rows(path), stitch_id, case_id)
+        if row is not None:
             start_sec = time_to_seconds(row.start)
             stop_sec = time_to_seconds(row.stop)
             if start_sec is not None and stop_sec is not None:

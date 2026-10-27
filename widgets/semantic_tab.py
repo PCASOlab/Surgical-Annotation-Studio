@@ -257,11 +257,24 @@ class SemanticTab(QWidget):
         saves the currently-displayed one."""
         meta = self.pm.get_stitch_meta(case_id, stitch_id)
         xlsx_path = self._xlsx_path_for(case_id)
-        offset = meta.start_sec_in_source if meta else 0.0
-        stop_sec = meta.end_sec_in_source if meta else (
-            offset + self.player.nframes / max(self.player.fps, 1))
-        events_abs = [
-            (semantic_io.seconds_to_time(ms / 1000.0 + offset), label)
+        existing = semantic_io.find_row_in_file(xlsx_path, stitch_id, case_id)
+        if meta is not None:
+            offset, stop_sec = meta.start_sec_in_source, meta.end_sec_in_source
+        else:
+            # clip not cut by this app (no metadata): keep the start/stop a
+            # row already records (this file, else another rater's), rather
+            # than rewriting it as 0
+            known = semantic_io.find_existing_stitch_timing(
+                self.pm.paths.semantic, case_id, stitch_id)
+            offset = known[0] if known else 0.0
+            stop_sec = known[1] if known else (
+                offset + self.player.nframes / max(self.player.fps, 1))
+        # keep the row's own convention: the lab's original rows store events
+        # relative to the clip, the app's rows in the video's timebase
+        relative = existing is not None and semantic_io.events_are_clip_relative(existing)
+        shift = 0.0 if relative else offset
+        events_out = [
+            (semantic_io.seconds_to_time(ms / 1000.0 + shift), label)
             for ms, label in events
         ]
         row = semantic_io.StitchRow(
@@ -270,7 +283,7 @@ class SemanticTab(QWidget):
             start=semantic_io.seconds_to_time(offset),
             stop=semantic_io.seconds_to_time(stop_sec),
             comments=comments or None,
-            events=events_abs,
+            events=events_out,
         )
         semantic_io.upsert_row(xlsx_path, row)
         return xlsx_path
@@ -395,12 +408,20 @@ class SemanticTab(QWidget):
                         default=None)
         if rows is None:
             return
-        match = next((r for r in rows if r.pcaso_var == stitch_id), None)
+        # older files name the stitch "stitch_12" instead of the clip name
+        match = semantic_io.find_stitch_row(rows, stitch_id, self._current_case or "")
         if match is None:
             QMessageBox.information(self, "Not found",
                                      f"No row for stitch '{stitch_id}' in {xlsx_path.name}.")
             return
-        offset = meta.start_sec_in_source if meta else 0.0
+        # the app's rows store events in the original video's timebase (the
+        # clip starts at its cut point: metadata, else the row's start
+        # column); the lab's original rows store them relative to the clip
+        if semantic_io.events_are_clip_relative(match):
+            offset = 0.0
+        else:
+            row_start = semantic_io.time_to_seconds(match.start)
+            offset = meta.start_sec_in_source if meta else (row_start or 0.0)
         self._events = []
         skipped = 0
         for t, label in match.sorted_events():
