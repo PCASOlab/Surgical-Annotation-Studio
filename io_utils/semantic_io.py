@@ -25,8 +25,10 @@ them as native Excel time cells (mm:ss.00-style display), exactly like the
 source files.
 """
 from __future__ import annotations
+import re
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,7 @@ import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 
 from core.config import EVENT_TYPES, MAX_EVENT_PAIRS
+from core.timefmt import parse_timecode
 from io_utils.safe_io import atomic_write, read_locked_aware
 
 ANNOTATIONS_SHEET = "Annotations"
@@ -56,59 +59,123 @@ QUALITY_CHECK_TEXT = [
 TIME_NUMBER_FORMAT = "hh:mm:ss.00"
 
 
-# Stitch rows have been named two ways: the lab's original files use the
-# short stitch ID ("stitch_12", with the video name in the `file` column);
-# since clips are named <case_id>_<stitch_id>, the app writes the clip name
-# ("<case_id>_stitch_12"). Rows are matched on the short form so both load.
+# Conventions found in the lab's semantic files (see docs in this module's
+# functions): stitch names are short ("stitch_12", "stitch_12(J)",
+# "stitch_00.5", occasionally just "12") or long ("<case or video name>_
+# stitch_12"); event times are relative to the clip ("for GUI" files) or in
+# the original video's timebase (the original annotations) -- consistently
+# within one file. The app writes the short name and keeps each file's time
+# convention; new files use clip time.
 CLIP_ID_PREFIXES = ("stitch_", "knot_")
+_UUID = re.compile(r"[0-9a-fA-F]{8}(-?[0-9a-fA-F]{4}){3}-?[0-9a-fA-F]{12}")
 
 
-def stitch_key(pcaso_var, *names) -> str:
-    """Short stitch ID: 'stitch_12' for 'stitch_12', '<case>_stitch_12' or
-    '<video name>_stitch_12'. `names` are prefixes to strip (case ID, the
-    row's `file` value; the longest that matches); then anything still in
-    front of the last '_stitch_' / '_knot_' is dropped (a video name can
-    start with the case ID, so stripping the case alone isn't enough)."""
-    v = str(pcaso_var or "").strip()
+def short_stitch_id(pcaso_var, *names) -> str:
+    """The stitch ID without a case/video-name prefix, as written:
+    'stitch_12(J)' for 'stitch_12(J)', '<case>_stitch_12(J)' or
+    '<video name>_stitch_12(J)'. `names` are prefixes to strip (the longest
+    that matches, any capitalisation); then anything still in front of the
+    last '_stitch_' / '_knot_' goes (a video name can start with the case ID)."""
+    v = _id_text(pcaso_var)
+    low = v.lower()
     for name in sorted((str(n or "").strip() for n in names), key=len, reverse=True):
-        if name and v.startswith(name + "_"):
+        if name and low.startswith(name.lower() + "_"):
             v = v[len(name) + 1:]
+            low = v.lower()
             break
-    cut = max(v.rfind("_" + prefix) for prefix in CLIP_ID_PREFIXES)
+    cut = max(low.rfind("_" + prefix) for prefix in CLIP_ID_PREFIXES)
     return v[cut + 1:] if cut >= 0 else v
+
+
+def _match_key(pcaso_var, *names) -> str:
+    """Comparison form of a stitch ID: no prefix, lower case, a bare number
+    read as a stitch ('12' -> 'stitch_12'), leading zeros ignored
+    ('stitch_01' == 'stitch_1', 'stitch_00.5' == 'stitch_0.5')."""
+    k = short_stitch_id(pcaso_var, *names).lower()
+    if k[:1].isdigit():
+        k = "stitch_" + k
+    m = re.fullmatch(r"(stitch|knot)_(\d+)(.*)", k)
+    return f"{m.group(1)}_{int(m.group(2))}{m.group(3)}" if m else k
 
 
 def find_stitch_row(rows: list["StitchRow"], stitch_id: str,
                     case_id: str = "") -> Optional["StitchRow"]:
     """The row for `stitch_id` (a clip name): an exact pcaso_var match if
-    there is one, else a row naming the same stitch the other way."""
+    there is one, else a row naming the same stitch another way."""
     exact = next((r for r in rows if r.pcaso_var == stitch_id), None)
     if exact is not None:
         return exact
-    key = stitch_key(stitch_id, case_id)
-    return next((r for r in rows if stitch_key(r.pcaso_var, r.file, case_id) == key), None)
+    key = _match_key(stitch_id, case_id)
+    return next((r for r in rows if _match_key(r.pcaso_var, r.file, case_id) == key), None)
 
 
-def events_are_clip_relative(row: "StitchRow") -> bool:
-    """Event times have been stored two ways: the lab's original files hold
-    them relative to the clip (0 = clip start), the app writes them in the
-    original video's timebase (like `start`/`stop`). Decide per row from
-    where the events fall: inside [start, stop] -> video time; inside
-    [0, clip length] -> clip time. When both fit (a clip near the start of
-    the video), video time is assumed, the app's own convention."""
+def _row_time_convention(row: "StitchRow", slack: float = 1.5) -> Optional[str]:
+    """'clip' if the row's events only fit 0..clip length, 'video' if they
+    only fit start..stop, None if both or neither fit (or no data). The
+    slack covers start/stop recorded in whole seconds."""
     times = [time_to_seconds(t) for t, _ in row.sorted_events()]
     times = [t for t in times if t is not None]
     start, stop = time_to_seconds(row.start), time_to_seconds(row.stop)
-    if not times or start is None or stop is None or start <= 0:
-        return False
-    slack = 0.5
-    if all(start - slack <= t <= stop + slack for t in times):
-        return False
-    return all(-slack <= t <= (stop - start) + slack for t in times)
+    if not times or start is None or stop is None:
+        return None
+    fits_clip = all(-slack <= t <= (stop - start) + slack for t in times)
+    fits_video = all(start - slack <= t <= stop + slack for t in times)
+    if fits_clip != fits_video:
+        return "clip" if fits_clip else "video"
+    return None
+
+
+def file_uses_clip_time(rows: list["StitchRow"], default: bool = True) -> bool:
+    """Whether a file stores event times relative to the clip. Decided per
+    file -- the lab's files never mix the two -- from the rows that are
+    unambiguous; a clip starting near the video start fits both ways (they
+    differ by `start`). Empty or undecidable files: `default` (clip time)."""
+    votes = Counter(_row_time_convention(r) for r in rows)
+    if votes["clip"] or votes["video"]:
+        return votes["clip"] >= votes["video"]
+    return default
 
 
 def find_row_in_file(xlsx_path: Path, stitch_id: str, case_id: str = "") -> Optional["StitchRow"]:
     return find_stitch_row(read_rows(xlsx_path), stitch_id, case_id) if xlsx_path.exists() else None
+
+
+def case_file_aliases(case_id: str) -> list[str]:
+    """Names a case's semantic files have been saved under: the case ID (in
+    the app, the full video name), and for an ID starting with a UUID, the
+    UUID with and without hyphens (the original annotation files)."""
+    names = [case_id]
+    m = _UUID.match(case_id or "")
+    if m:
+        names += [m.group(0), m.group(0).replace("-", "")]
+    return list(dict.fromkeys(names))
+
+
+def semantic_files_for_case(semantic_dir: Path, case_id: str,
+                            rater: Optional[str] = None) -> list[Path]:
+    """<alias>_PJ_d2m_semantic_<rater>.xlsx files of a case (any rater if
+    None), matching 'semantic'/'Semantic' and case alike. The app's own
+    file name comes first."""
+    if not semantic_dir.exists():
+        return []
+    aliases = [a.lower() for a in case_file_aliases(case_id)]
+    marker = "_pj_d2m_semantic_"
+    found = []
+    for p in semantic_dir.glob("*.xlsx"):
+        low = p.name.lower()
+        if p.name.startswith("~") or marker not in low:
+            continue
+        prefix, _, rest = low.rpartition(marker)
+        if prefix in aliases and (rater is None or rest[:-len(".xlsx")] == rater.lower()):
+            found.append(p)
+    return sorted(found, key=lambda p: (aliases.index(p.name.lower().rpartition(marker)[0]), p.name))
+
+
+def semantic_path_for(semantic_dir: Path, case_id: str, rater: str) -> Path:
+    """The file to read/write for a case + rater: an existing one under any
+    of the case's names, else the app's standard name."""
+    existing = semantic_files_for_case(semantic_dir, case_id, rater)
+    return existing[0] if existing else semantic_dir / f"{case_id}_PJ_d2m_semantic_{rater}.xlsx"
 
 
 def _clear_row_cells(ws: Worksheet, row_idx: int) -> None:
@@ -133,11 +200,23 @@ class StitchRow:
 
 
 def time_to_seconds(t) -> Optional[float]:
+    """Seconds from a time cell in any of the forms found in the lab's files:
+    Excel time, date-time, duration ([h]:mm:ss), or text ('0:14:24',
+    '14:24.55', and '14.19.55' typed with dots = mm.ss.hh). None for an
+    empty or unreadable cell (the caller reports unreadable ones)."""
     if t is None:
         return None
-    if not isinstance(t, time):
-        return None  # malformed cell (e.g. a typo'd string) -- caller reports this
-    return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
+    if isinstance(t, (time, datetime)):
+        return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
+    if isinstance(t, timedelta):
+        return t.total_seconds()
+    if isinstance(t, str):
+        text = t.strip()
+        dotted = re.fullmatch(r"(\d+)\.(\d{1,2})\.(\d+)", text)
+        if dotted:
+            return int(dotted.group(1)) * 60 + int(dotted.group(2)) + float("0." + dotted.group(3))
+        return parse_timecode(text) if ":" in text else None
+    return None
 
 
 def seconds_to_time(sec: float) -> time:
@@ -194,20 +273,50 @@ def read_rows(xlsx_path: Path) -> list[StitchRow]:
         return []
     ws = wb[ANNOTATIONS_SHEET]
     rows_out: list[StitchRow] = []
-    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if row[0] is None:
-            continue
+        row = list(row) + [None] * max(0, 5 - len(row))
         file_, pcaso_var, start, stop, comments = row[0], row[1], row[2], row[3], row[4]
+        if _blank(file_) and _blank(pcaso_var):
+            continue
         events: list[tuple[Optional[time], Optional[str]]] = []
         rest = row[5:]
         for i in range(0, len(rest) - 1, 2):
-            events.append((rest[i], rest[i + 1]))
+            t, label = rest[i], rest[i + 1]
+            label = None if _blank(label) else str(label).strip()
+            if _blank(t):
+                t = None
+            elif not isinstance(t, time):
+                sec = time_to_seconds(t)
+                # text / duration cells become times; unreadable ones stay as
+                # they are so the loader can report them
+                t = seconds_to_time(sec) if sec is not None else t
+            if t is not None or label is not None:
+                events.append((t, label))
         rows_out.append(StitchRow(
-            file=file_, pcaso_var=pcaso_var, start=start, stop=stop,
-            comments=comments, events=events,
+            file=None if _blank(file_) else str(file_).strip(),
+            pcaso_var=_id_text(pcaso_var),
+            start=_as_time(start), stop=_as_time(stop),
+            comments=None if _blank(comments) else comments,
+            events=events,
         ))
     return rows_out
+
+
+def _blank(value) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _as_time(value) -> Optional[time]:
+    """start/stop cell (time, duration or text like '0:14:24') -> time."""
+    sec = time_to_seconds(value)
+    return None if sec is None else seconds_to_time(sec)
+
+
+def _id_text(value) -> str:
+    """pcaso_var as text; a number cell (12, 12.1) is read as typed."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return "" if value is None else str(value).strip()
 
 
 def upsert_row(xlsx_path: Path, new_row: StitchRow) -> None:
@@ -228,21 +337,26 @@ def upsert_row(xlsx_path: Path, new_row: StitchRow) -> None:
             target_row_idx = r
             break
     if target_row_idx is None:
-        # the same stitch saved under its other name (short "stitch_12" in
-        # older files): update that row, keeping its file/pcaso_var values so
-        # existing data isn't renamed
-        key = stitch_key(new_row.pcaso_var, new_row.file)
+        # the same stitch saved under another name ("<case>_stitch_12",
+        # "12", ...): update that row. Its `file` value is kept as it is
+        # (it may differ from the case ID, typos included -- not ours to fix);
+        # the name is rewritten in the short form.
+        key = _match_key(new_row.pcaso_var, new_row.file)
         for r in range(2, ws.max_row + 1):
             file_val = ws.cell(row=r, column=1).value
             var_val = ws.cell(row=r, column=2).value
-            if var_val and stitch_key(var_val, file_val, new_row.file) == key:
+            if not _blank(var_val) and _match_key(var_val, file_val, new_row.file) == key:
                 target_row_idx = r
-                new_row = StitchRow(file=file_val, pcaso_var=var_val, start=new_row.start,
-                                    stop=new_row.stop, comments=new_row.comments,
-                                    events=new_row.events)
+                if not _blank(file_val):
+                    new_row = StitchRow(file=file_val, pcaso_var=new_row.pcaso_var,
+                                        start=new_row.start, stop=new_row.stop,
+                                        comments=new_row.comments, events=new_row.events)
                 break
     if target_row_idx is None:
-        target_row_idx = ws.max_row + 1 if ws.cell(row=ws.max_row, column=1).value else ws.max_row
+        # first empty row (rows can be blank at the end of a sheet)
+        target_row_idx = next((r for r in range(2, ws.max_row + 1)
+                               if _blank(ws.cell(row=r, column=1).value)
+                               and _blank(ws.cell(row=r, column=2).value)), ws.max_row + 1)
 
     events = new_row.sorted_events()
     if len(events) > MAX_EVENT_PAIRS:
@@ -408,7 +522,7 @@ def find_existing_stitch_timing(
     outside this tool, rather than guessing 0/duration."""
     if not semantic_dir.exists():
         return None
-    for path in sorted(semantic_dir.glob(f"{case_id}_PJ_d2m_semantic_*.xlsx")):
+    for path in semantic_files_for_case(semantic_dir, case_id):
         row = find_stitch_row(read_rows(path), stitch_id, case_id)
         if row is not None:
             start_sec = time_to_seconds(row.start)

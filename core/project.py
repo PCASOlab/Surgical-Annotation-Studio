@@ -251,9 +251,9 @@ class ProjectManager:
 
     # -- annotation status (for the dashboard) --------------------------
     def semantic_xlsx_for_case(self, case_id: str) -> list[Path]:
-        if not self.paths.semantic.exists():
-            return []
-        return sorted(self.paths.semantic.glob(f"{case_id}_PJ_d2m_semantic_*.xlsx"))
+        # also finds files saved under the case's UUID or as "..._Semantic_..."
+        from io_utils.semantic_io import semantic_files_for_case
+        return semantic_files_for_case(self.paths.semantic, case_id)
 
     def dlc_csv_for_case(self, case_id: str) -> list[Path]:
         case_dir = self.paths.pose / case_id

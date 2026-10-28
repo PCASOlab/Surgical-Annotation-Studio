@@ -327,6 +327,25 @@ and press **1-9** at the exact moment each state begins. Use
 **Save** writes the annotation; **Load existing annotation** brings a
 previous save back in for review or edits.
 
+**File format.** One spreadsheet per case and rater. Each stitch is a row:
+- `file`: the case (video) name,
+- `pcaso_var`: the short stitch ID, e.g. `stitch_12(J)`; the clip name is
+  `<file>_<pcaso_var>`,
+- `start`/`stop`: the clip's position in the original video,
+- the event times, **relative to the clip** (0 = clip start). The time in
+  the video is `start` + event time.
+
+The app also reads the older variants found in the lab's files:
+- long names (`<video>_stitch_12`) or a bare number (`12`),
+- start/stop written as text (`0:14:24`),
+- event times in the original video's timebase,
+- files named after the case UUID (`…_PJ_d2m_Semantic_<rater>.xlsx`).
+
+A file is never mixed. If it already stores event times in video time,
+saving keeps that, and only new files use clip time. When a stitch is
+saved, its row is rewritten with the short name, and its `file` value is
+kept as it was.
+
 Switching to a different case or clip automatically saves whatever
 annotation was on screen first (as long as a **Rater** name is set --
 that's what the saved file is named after). The only way to lose

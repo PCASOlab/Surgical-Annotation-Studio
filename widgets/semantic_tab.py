@@ -204,7 +204,9 @@ class SemanticTab(QWidget):
         rater = self.rater_edit.text().strip()
         if not case_id or not rater:
             return None
-        return self.pm.paths.semantic / f"{case_id}_PJ_d2m_semantic_{rater}.xlsx"
+        # an existing file under any of the case's names (original files are
+        # named after the case UUID / "..._Semantic_..."), else the app's name
+        return semantic_io.semantic_path_for(self.pm.paths.semantic, case_id, rater)
 
     def _xlsx_path(self) -> Path | None:
         return self._xlsx_path_for(self._current_case) if self._current_case else None
@@ -257,7 +259,8 @@ class SemanticTab(QWidget):
         saves the currently-displayed one."""
         meta = self.pm.get_stitch_meta(case_id, stitch_id)
         xlsx_path = self._xlsx_path_for(case_id)
-        existing = semantic_io.find_row_in_file(xlsx_path, stitch_id, case_id)
+        rows = semantic_io.read_rows(xlsx_path)
+        existing = semantic_io.find_stitch_row(rows, stitch_id, case_id)
         if meta is not None:
             offset, stop_sec = meta.start_sec_in_source, meta.end_sec_in_source
         else:
@@ -269,17 +272,19 @@ class SemanticTab(QWidget):
             offset = known[0] if known else 0.0
             stop_sec = known[1] if known else (
                 offset + self.player.nframes / max(self.player.fps, 1))
-        # keep the row's own convention: the lab's original rows store events
-        # relative to the clip, the app's rows in the video's timebase
-        relative = existing is not None and semantic_io.events_are_clip_relative(existing)
-        shift = 0.0 if relative else offset
+        # event times in the file's own convention (never mixed within a
+        # file); new files use clip time. Video time = start + clip time.
+        clip_time = semantic_io.file_uses_clip_time(rows, default=True)
+        shift = 0.0 if clip_time else offset
         events_out = [
             (semantic_io.seconds_to_time(ms / 1000.0 + shift), label)
             for ms, label in events
         ]
+        # the lab's format: `file` = case (video) name, pcaso_var = the short
+        # stitch ID -- the clip name is <file>_<pcaso_var>
         row = semantic_io.StitchRow(
             file=case_id,
-            pcaso_var=stitch_id,
+            pcaso_var=semantic_io.short_stitch_id(stitch_id, case_id),
             start=semantic_io.seconds_to_time(offset),
             stop=semantic_io.seconds_to_time(stop_sec),
             comments=comments or None,
@@ -414,19 +419,22 @@ class SemanticTab(QWidget):
             QMessageBox.information(self, "Not found",
                                      f"No row for stitch '{stitch_id}' in {xlsx_path.name}.")
             return
-        # the app's rows store events in the original video's timebase (the
-        # clip starts at its cut point: metadata, else the row's start
-        # column); the lab's original rows store them relative to the clip
-        if semantic_io.events_are_clip_relative(match):
+        # event times are relative to the clip ("for GUI" files, and what the
+        # app writes now) or in the original video's timebase (the original
+        # annotations; the clip starts at its cut point: metadata, else the
+        # row's start column) -- decided per file
+        if semantic_io.file_uses_clip_time(rows, default=True):
             offset = 0.0
         else:
             row_start = semantic_io.time_to_seconds(match.start)
             offset = meta.start_sec_in_source if meta else (row_start or 0.0)
         self._events = []
-        skipped = 0
-        for t, label in match.sorted_events():
+        skipped = []
+        for t, label in match.events:
+            if not label:
+                continue  # a time without a label: nothing to show
             if not isinstance(t, dtime):
-                skipped += 1
+                skipped.append(f"{label} (time: {t if t is not None else 'empty'})")
                 continue
             abs_sec = t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
             clip_ms = (abs_sec - offset) * 1000.0
@@ -434,9 +442,11 @@ class SemanticTab(QWidget):
         self._events.sort(key=lambda x: x[0])
         if skipped:
             QMessageBox.warning(
-                self, "Malformed timestamp(s) skipped",
-                f"{skipped} event(s) had a non-time cell (typo?) and were skipped. "
-                f"Check the source xlsx directly to fix those rows."
+                self, "Events without a usable time",
+                f"{len(skipped)} event(s) in this row have no readable time, so they "
+                f"can't be shown:\n  " + "\n  ".join(skipped) +
+                "\n\nThey will be removed from the file when this stitch is saved. "
+                "Add them again at the right moment, or fix the time in the xlsx first."
             )
         self._refresh_event_table()
         self.comments_edit.setPlainText(match.comments or "")
