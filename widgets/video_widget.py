@@ -21,9 +21,9 @@ from typing import Optional
 import cv2
 import numpy as np
 from core.timefmt import format_timecode, parse_timecode
-from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF, QPointF
 from PySide6.QtGui import (
-    QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut, QColor, QPainter,
+    QImage, QPixmap, QWheelEvent, QKeySequence, QShortcut, QColor, QPainter, QPen,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
@@ -85,21 +85,32 @@ def timecode_to_ms(text: str) -> Optional[float]:
     return None if seconds is None else seconds * 1000.0
 
 
+_TICK_COLOR = QColor("#4b5563")       # semantic event ticks (neutral)
+TICK_HIGHLIGHT = QColor("#ff8c00")    # the selected event
+
+
 class _MarkedSlider(QSlider):
-    """QSlider that also paints translucent colored ranges (in slider/frame
-    units) over its groove -- used to show cut clips on the timeline."""
+    """QSlider that also paints translucent colored ranges (cut clips in the
+    Preprocessing tab) and thin ticks (semantic events), both in slider/frame
+    units, over its groove."""
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self._ranges: list[tuple[int, int, QColor]] = []
+        self._ticks: list[tuple[int, QColor]] = []
+        self.setMinimumHeight(22)  # room for ticks above/below the groove
 
     def set_ranges(self, ranges: list[tuple[int, int, QColor]]) -> None:
         self._ranges = ranges
         self.update()
 
+    def set_ticks(self, ticks: list[tuple[int, QColor]]) -> None:
+        self._ticks = ticks
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().paintEvent(event)
-        if not self._ranges or self.maximum() <= self.minimum():
+        if (not self._ranges and not self._ticks) or self.maximum() <= self.minimum():
             return
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
@@ -125,6 +136,14 @@ class _MarkedSlider(QSlider):
             # outline so pale colors still read on a light groove
             painter.setPen(color.darker(150))
             painter.drawRect(rect)
+        # ticks: thin lines a bit taller than the groove; highlighted ones
+        # (drawn last, so on top) slightly thicker
+        mid = groove.center().y()
+        for value, color in sorted(self._ticks, key=lambda t: t[1] != _TICK_COLOR):
+            pen = QPen(color, 1.5 if color == _TICK_COLOR else 3)
+            painter.setPen(pen)
+            x = x_of(value)
+            painter.drawLine(QPointF(x, mid - 7), QPointF(x, mid + 7))
         painter.end()
 
 
@@ -149,6 +168,7 @@ class VideoPlayerWidget(QWidget):
         self._min_height = min_height
         self._show_zoom_controls = show_zoom_controls
         self._timeline_ranges_ms: list[tuple[float, float, QColor]] = []
+        self._timeline_ticks_ms: list[tuple[float, bool]] = []
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -292,10 +312,18 @@ class VideoPlayerWidget(QWidget):
         self._timeline_ranges_ms = list(ranges_ms)
         self._apply_timeline_ranges()
 
+    def set_timeline_ticks(self, ticks_ms: list[tuple[float, bool]]) -> None:
+        """Ticks on the seek slider at (time_ms, highlighted) -- e.g. the
+        semantic events, with the selected one highlighted."""
+        self._timeline_ticks_ms = list(ticks_ms)
+        self._apply_timeline_ranges()
+
     def _apply_timeline_ranges(self) -> None:
         to_frame = lambda ms: int(round(ms * self._fps / 1000.0))  # noqa: E731
         self.slider.set_ranges([(to_frame(a), to_frame(b), c)
                                 for a, b, c in self._timeline_ranges_ms])
+        self.slider.set_ticks([(to_frame(ms), TICK_HIGHLIGHT if hl else _TICK_COLOR)
+                               for ms, hl in self._timeline_ticks_ms])
 
     @property
     def fps(self) -> float:

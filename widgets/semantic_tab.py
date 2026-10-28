@@ -102,6 +102,7 @@ class SemanticTab(QWidget):
         self.event_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.event_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.event_table.verticalHeader().sectionDoubleClicked.connect(self._seek_to_event_row)
+        self.event_table.itemSelectionChanged.connect(self._update_event_ticks)
         self.player.positionMsChanged.connect(self._sync_highlight_to_playhead)
         mid.addWidget(self.event_table, stretch=2)
 
@@ -309,10 +310,18 @@ class SemanticTab(QWidget):
             label_item = QTableWidgetItem(label)
             self.event_table.setItem(r, 0, time_item)
             self.event_table.setItem(r, 1, label_item)
+        self._update_event_ticks()
         if not self._events:
             self.event_table.clearSelection()
             return
         self._sync_highlight_to_playhead(self.player.current_ms())
+
+    def _update_event_ticks(self) -> None:
+        """A tick on the seek bar per event; the selected one (the event
+        "Move selected event -> playhead" would move) highlighted."""
+        selected = self._selected_row()
+        self.player.set_timeline_ticks(
+            [(ms, i == selected) for i, (ms, _) in enumerate(self._events)])
 
     def _seek_to_event_row(self, row: int) -> None:
         if not 0 <= row < len(self._events):
